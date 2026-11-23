@@ -1,0 +1,171 @@
+package sources
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"testing"
+	"time"
+)
+
+// Test vector from X's "Creating a signature" documentation.
+func TestOAuth1Signature(t *testing.T) {
+	o := OAuth1{
+		ConsumerKey:    "xvz1evFS4wEEPTGEFPHBog",
+		ConsumerSecret: "kAcSOqF21Fu85e7zjz7ZN2U4ZRhfV3WpwPAoE3Z7kBw",
+		Token:          "370773112-GmHxMAgYyLbNEtIKZeRNFsMKPR9EyMZeS9weJAEb",
+		TokenSecret:    "LswwdoUaIvS8ltyTt5jkRh4J50vUPVVHtR2YPi5kE",
+	}
+	params := url.Values{
+		"status":           {"Hello Ladies + Gentlemen, a signed OAuth request!"},
+		"include_entities": {"true"},
+	}
+	h := o.headerWith("POST", "https://api.twitter.com/1.1/statuses/update.json", params,
+		"kYjzVBB8Y0ZFabxSWbWovY3uYSQ2pTgmZeNu2VS4cg", "1318622958")
+	want := `oauth_signature="` + pctEncode("hCtSmYh+iHYCEqBWrE7C7hYmtUk=") + `"`
+	if !strings.Contains(h, want) {
+		t.Fatalf("header %q lacks %q", h, want)
+	}
+}
+
+func TestPctEncode(t *testing.T) {
+	if got := pctEncode("a b+c~/é"); got != "a%20b%2Bc~%2F%C3%A9" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestParseFeedRSS(t *testing.T) {
+	body := `<?xml version="1.0"?><rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/"><channel>
+<item><title>Big &amp; news</title><link>https://example.com/a</link><guid>id-a</guid>
+<description>&lt;p&gt;Some &lt;b&gt;text&lt;/b&gt;&lt;/p&gt;</description><comments>https://lobste.rs/s/a</comments>
+<dc:creator>alice</dc:creator><pubDate>Mon, 23 Nov 2026 10:00:00 +0000</pubDate></item>
+<item><title>Bad link</title><link>javascript:alert(1)</link></item>
+<item><title></title><link>https://example.com/empty-title</link></item>
+</channel></rss>`
+	items, err := ParseFeed("lobsters", []byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("want 1 item, got %d: %+v", len(items), items)
+	}
+	it := items[0]
+	if it.Title != "Big & news" || it.ExtID != "id-a" || it.Text != "Some text" || it.Author != "alice" ||
+		it.DiscussURL != "https://lobste.rs/s/a" || it.Published != time.Date(2026, 11, 23, 10, 0, 0, 0, time.UTC) {
+		t.Fatalf("unexpected item %+v", it)
+	}
+}
+
+func TestParseFeedAtom(t *testing.T) {
+	body := `<feed xmlns="http://www.w3.org/2005/Atom"><entry><title>Optech #400</title><id>tag:x,1</id>
+<link rel="self" href="https://example.com/self"/><link href="https://bitcoinops.org/n/400"/>
+<summary>Weekly news</summary><updated>2026-11-20T00:00:00Z</updated></entry></feed>`
+	items, err := ParseFeed("optech", []byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].URL != "https://bitcoinops.org/n/400" || items[0].ExtID != "tag:x,1" {
+		t.Fatalf("unexpected %+v", items)
+	}
+}
+
+func TestParseFeedUnknown(t *testing.T) {
+	if _, err := ParseFeed("x", []byte(`<html></html>`)); err == nil {
+		t.Fatal("want error")
+	}
+}
+
+func TestHNFetch(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/topstories.json":
+			fmt.Fprint(w, `[1,2,3,4]`)
+		case "/item/1.json":
+			fmt.Fprint(w, `{"id":1,"type":"story","title":"Story","url":"https://e.com","score":100,"descendants":5,"by":"u","time":1700000000}`)
+		case "/item/2.json":
+			fmt.Fprint(w, `{"id":2,"type":"story","title":"Ask HN: x","score":10,"time":1700000000}`)
+		case "/item/3.json":
+			fmt.Fprint(w, `{"id":3,"type":"job","title":"Job"}`)
+		default:
+			http.Error(w, "nope", 500)
+		}
+	}))
+	defer srv.Close()
+	h := &HN{Client: srv.Client(), BaseURL: srv.URL, TopN: 10}
+	items, err := h.Fetch(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("want 2 stories, got %+v", items)
+	}
+	if items[0].URL != "https://e.com" || items[0].Text != "100 points, 5 comments" {
+		t.Fatalf("bad item %+v", items[0])
+	}
+	if items[1].URL != "https://news.ycombinator.com/item?id=2" {
+		t.Fatalf("ask HN should link discussion, got %q", items[1].URL)
+	}
+}
+
+type memKV map[string]string
+
+func (m memKV) Get(_ context.Context, k string) (string, error) { return m[k], nil }
+func (m memKV) Set(_ context.Context, k, v string) error        { m[k] = v; return nil }
+
+func TestXFetch(t *testing.T) {
+	var calls []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.Header.Get("Authorization"), "OAuth ") {
+			http.Error(w, "no auth", 401)
+			return
+		}
+		calls = append(calls, r.URL.Path+"?"+r.URL.RawQuery)
+		switch r.URL.Path {
+		case "/users/me":
+			fmt.Fprint(w, `{"data":{"id":"42"}}`)
+		case "/users/42/timelines/reverse_chronological":
+			fmt.Fprint(w, `{"data":[{"id":"900","text":"hello &amp; world","author_id":"7","created_at":"2026-11-23T09:00:00.000Z","public_metrics":{"like_count":3}}],
+				"includes":{"users":[{"id":"7","username":"bob"}]},"meta":{"newest_id":"900","result_count":1}}`)
+		}
+	}))
+	defer srv.Close()
+	x := &X{Client: srv.Client(), BaseURL: srv.URL, Auth: OAuth1{"a", "b", "c", "d"},
+		MaxPerPoll: 50, MaxPerDay: 60, MinInterval: 30 * time.Minute, ExcludeReplies: true}
+	kv := memKV{}
+	now := time.Date(2026, 11, 23, 10, 0, 0, 0, time.UTC)
+
+	items, err := x.Fetch(context.Background(), kv, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].URL != "https://x.com/bob/status/900" || items[0].Title != "@bob: hello & world" {
+		t.Fatalf("unexpected %+v", items)
+	}
+	if kv[kvXSinceID] != "900" || kv[kvXUserID] != "42" || kv[kvXReads+"2026-11-23"] != "1" {
+		t.Fatalf("state not saved: %v", kv)
+	}
+	if !strings.Contains(calls[1], "max_results=50") || !strings.Contains(calls[1], "exclude=replies") {
+		t.Fatalf("bad query %q", calls[1])
+	}
+
+	// Too early: no call.
+	if items, _ := x.Fetch(context.Background(), kv, now.Add(10*time.Minute)); items != nil || len(calls) != 2 {
+		t.Fatalf("polled before min interval")
+	}
+	// Later: since_id used, budget capped at the daily remainder (60-1).
+	if _, err := x.Fetch(context.Background(), kv, now.Add(31*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(calls[2], "since_id=900") || !strings.Contains(calls[2], "max_results=50") {
+		t.Fatalf("bad follow-up query %q", calls[2])
+	}
+	// Budget used up: no call.
+	kv[kvXReads+"2026-11-23"] = "58"
+	kv[kvXLastPoll] = "0"
+	if items, _ := x.Fetch(context.Background(), kv, now.Add(time.Hour)); items != nil || len(calls) != 3 {
+		t.Fatalf("polled over budget")
+	}
+}
