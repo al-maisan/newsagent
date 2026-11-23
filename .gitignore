@@ -1,0 +1,3 @@
+/newsagent
+*.db
+secrets.env
