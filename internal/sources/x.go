@@ -190,8 +190,10 @@ func (x *X) Fetch(ctx context.Context, kv KV, now time.Time) ([]store.Item, erro
 	if x.HomeTimeline {
 		read("home", "/users/"+uid+"/timelines/reverse_chronological", kvXSinceID, "", x.ExcludeReplies)
 	}
+	// Spend and since ids are saved already: dropping the items now would
+	// lose billed posts for good. At worst the next poll comes early.
 	if err := kv.Set(ctx, kvXLastPoll, strconv.FormatInt(now.Unix(), 10)); err != nil {
-		return nil, err
+		slog.Warn("x: saving last poll time failed", "err", err)
 	}
 	if len(items) == 0 && len(errs) > 0 {
 		return nil, errors.Join(errs...)
