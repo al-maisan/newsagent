@@ -3,10 +3,14 @@ package telegram
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"unicode/utf16"
+	"unicode/utf8"
 )
 
 func TestSend(t *testing.T) {
@@ -59,5 +63,91 @@ func TestSplit(t *testing.T) {
 	}
 	if got := Split("a\nb", 10); len(got) != 1 || got[0] != "a\nb" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestSplitKeepsHTMLAndRunesWhole(t *testing.T) {
+	link := `<a href="https://e.com/?a=1&amp;b=2">HN</a>`
+	line := "• " + strings.Repeat("é", 30) + " " + link + " " + link + " " + link
+	for limit := len(link); limit <= len(line); limit++ {
+		parts := Split(line, limit)
+		if got := strings.Join(parts, " "); strings.ReplaceAll(got, " ", "") != strings.ReplaceAll(line, " ", "") {
+			t.Fatalf("limit %d: content changed: %q", limit, parts)
+		}
+		for _, p := range parts {
+			if len(p) > limit || !utf8.ValidString(p) || strings.Count(p, "<a ") != strings.Count(p, "</a>") ||
+				strings.Count(p, "&") != strings.Count(p, ";") {
+				t.Fatalf("limit %d: bad part %q", limit, p)
+			}
+		}
+	}
+	// A single element longer than limit can only be cut inside it, but
+	// never inside a rune.
+	for _, p := range Split(strings.Repeat("é", 10), 5) {
+		if !utf8.ValidString(p) || len(p) > 5 {
+			t.Fatalf("bad part %q", p)
+		}
+	}
+}
+
+func TestIsRejected(t *testing.T) {
+	cases := []struct {
+		err  error
+		want bool
+	}{
+		{&APIError{400, "Bad Request: can't parse entities: unclosed tag"}, true},
+		{&APIError{400, "Bad Request: message is too long"}, true},
+		{fmt.Errorf("wrapped: %w", &APIError{400, "Bad Request: message text is empty"}), true},
+		{&APIError{400, "Bad Request: chat not found"}, false},
+		{&APIError{429, "Too Many Requests: retry after 5"}, false},
+		{&APIError{403, "Forbidden: bot was blocked by the user"}, false},
+		{errors.New("can't parse entities"), false},
+	}
+	for _, tc := range cases {
+		if got := IsRejected(tc.err); got != tc.want {
+			t.Errorf("IsRejected(%v) = %v, want %v", tc.err, got, tc.want)
+		}
+	}
+}
+
+func TestSendFallsBackToPlainText(t *testing.T) {
+	// plain: how the plain-text resend ends.
+	for _, plain := range []string{"ok", "rejected", "down"} {
+		var reqs []map[string]any
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var m map[string]any
+			json.NewDecoder(r.Body).Decode(&m)
+			reqs = append(reqs, m)
+			switch {
+			case m["parse_mode"] == "HTML" || plain == "rejected":
+				w.WriteHeader(400)
+				w.Write([]byte(`{"ok":false,"description":"Bad Request: can't parse entities"}`))
+			case plain == "down":
+				w.WriteHeader(502)
+				w.Write([]byte(`{"ok":false,"description":"Bad Gateway"}`))
+			default:
+				w.Write([]byte(`{"ok":true}`))
+			}
+		}))
+		c := &Client{HTTP: srv.Client(), BaseURL: srv.URL, Token: "T", ChatID: "1"}
+		err := c.Send(context.Background(), `<b>A &amp; B</b> <a href="https://e.com/?a=1&amp;b=2">HN</a>`)
+		srv.Close()
+		if len(reqs) != 2 || reqs[1]["parse_mode"] != nil || reqs[1]["text"] != "A & B HN https://e.com/?a=1&b=2" {
+			t.Fatalf("plain %s: bad requests %v", plain, reqs)
+		}
+		if (plain == "ok") != (err == nil) || (plain == "rejected") != IsRejected(err) {
+			t.Fatalf("plain %s: err %v (rejected=%v)", plain, err, IsRejected(err))
+		}
+	}
+}
+
+func TestPlainTextClipsUTF16(t *testing.T) {
+	s := PlainText(strings.Repeat("😀", MaxLen))
+	n := 0
+	for _, r := range s {
+		n += utf16.RuneLen(r)
+	}
+	if n > MaxLen || !strings.HasSuffix(s, "…") {
+		t.Fatalf("len %d", n)
 	}
 }

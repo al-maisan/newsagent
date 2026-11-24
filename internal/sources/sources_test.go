@@ -252,3 +252,17 @@ func TestParseFeedLenient(t *testing.T) {
 		t.Error("unknown charset: want error")
 	}
 }
+
+func TestPlain(t *testing.T) {
+	cases := map[string]string{
+		"<p>It&#8217;s &mdash; ok</p>":   "It’s — ok",
+		"a&nbsp;&nbsp;b \n c":            "a b c",
+		"AT&amp;T &lt;b&gt;not a tag":    "AT&T <b>not a tag",
+		"<a href=\"x\">link</a>&#x27;s ": "link 's",
+	}
+	for in, want := range cases {
+		if got := plain(in); got != want {
+			t.Errorf("plain(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
