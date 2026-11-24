@@ -115,7 +115,8 @@ func TestMigrateAddsPriority(t *testing.T) {
 	old := strings.Replace(schema, "priority       TEXT    NOT NULL DEFAULT '',\n", "", 1)
 	old = strings.Replace(old, "hourly_sent_at INTEGER,\n", "", 1)
 	old = strings.Replace(old, "score_retries  INTEGER NOT NULL DEFAULT 0,\n", "", 1)
-	if strings.Contains(old, "priority ") || strings.Contains(old, "hourly_sent_at") || strings.Contains(old, "score_retries") {
+	old = strings.Replace(old, "urgent_rejected INTEGER NOT NULL DEFAULT 0,\n", "", 1)
+	if strings.Contains(old, "priority ") || strings.Contains(old, "hourly_sent_at") || strings.Contains(old, "score_retries") || strings.Contains(old, "urgent_rejected") {
 		t.Fatal("test setup: priority column not found in schema")
 	}
 	if _, err := db.Exec(old); err != nil {
@@ -136,6 +137,9 @@ func TestMigrateAddsPriority(t *testing.T) {
 	}
 	if un, err := s.Unscored(context.Background(), time.Unix(0, 0), 10); err != nil || len(un) != 1 {
 		t.Fatalf("score_retries column after migration: %v %v", un, err)
+	}
+	if _, err := s.UrgentTitles(context.Background(), 9, time.Unix(0, 0)); err != nil {
+		t.Fatalf("urgent_rejected column after migration: %v", err)
 	}
 }
 
@@ -178,6 +182,7 @@ func TestMigrateConcurrent(t *testing.T) {
 		old := strings.Replace(schema, "priority       TEXT    NOT NULL DEFAULT '',\n", "", 1)
 		old = strings.Replace(old, "hourly_sent_at INTEGER,\n", "", 1)
 		old = strings.Replace(old, "score_retries  INTEGER NOT NULL DEFAULT 0,\n", "", 1)
+		old = strings.Replace(old, "urgent_rejected INTEGER NOT NULL DEFAULT 0,\n", "", 1)
 		// Like a real database: newsagent always ran it in WAL mode.
 		if _, err := db.Exec(`PRAGMA journal_mode=WAL;` + old); err != nil {
 			t.Fatal(err)
@@ -270,5 +275,28 @@ func TestDeleteBefore(t *testing.T) {
 	}
 	if err := s.DeleteBefore(ctx, "x_reads:", "zzz"); err == nil {
 		t.Error("bound without prefix: want error")
+	}
+}
+
+func TestRejectedPingNotReported(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	now := time.Date(2026, 11, 24, 10, 0, 0, 0, time.UTC)
+	s.Insert(ctx, []Item{{Source: "a", ExtID: "1", Title: "sent", URL: "https://e/1"}, {Source: "a", ExtID: "2", Title: "rejected", URL: "https://e/2"}}, now)
+	un, _ := s.Unscored(ctx, now.Add(-time.Hour), 10)
+	s.SaveScores(ctx, []int64{un[0].ID, un[1].ID}, []Score{{ID: un[0].ID, Score: 9}, {ID: un[1].ID, Score: 9}})
+	s.MarkUrgentSent(ctx, un[0].ID, now)
+	if err := s.MarkUrgentRejected(ctx, un[1].ID, now); err != nil {
+		t.Fatal(err)
+	}
+	if titles, _ := s.UrgentTitles(ctx, 9, now.Add(-time.Hour)); len(titles) != 1 || titles[0] != "sent" {
+		t.Fatalf("rejected ping must not count as reported: %v", titles)
+	}
+	if urg, _ := s.PendingUrgent(ctx, 9, now.Add(-time.Hour), 5); len(urg) != 0 {
+		t.Fatalf("rejected ping must not be sent again: %+v", urg)
 	}
 }

@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS items (
 	score_attempts INTEGER NOT NULL DEFAULT 0,
 	score_retries  INTEGER NOT NULL DEFAULT 0,
 	urgent_sent_at INTEGER,
+	urgent_rejected INTEGER NOT NULL DEFAULT 0,
 	digest_sent_at INTEGER,
 	hourly_sent_at INTEGER,
 	priority       TEXT    NOT NULL DEFAULT '',
@@ -122,6 +123,7 @@ func migrate(db *sql.DB) error {
 		{"priority", "TEXT NOT NULL DEFAULT ''"},
 		{"hourly_sent_at", "INTEGER"},
 		{"score_retries", "INTEGER NOT NULL DEFAULT 0"},
+		{"urgent_rejected", "INTEGER NOT NULL DEFAULT 0"},
 	} {
 		var n int
 		err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('items') WHERE name = ?`, c.name).Scan(&n)
@@ -239,7 +241,7 @@ func (s *Store) PendingUrgent(ctx context.Context, minScore int, since time.Time
 // story even before the first one went out.
 func (s *Store) UrgentTitles(ctx context.Context, minScore int, since time.Time) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT title FROM items
-		WHERE urgent_sent_at > ? OR (urgent_sent_at IS NULL AND fetched_at > ?
+		WHERE (urgent_sent_at > ? AND urgent_rejected = 0) OR (urgent_sent_at IS NULL AND fetched_at > ?
 			AND (priority = 'ping' OR (score >= ? AND duplicate = 0)))
 		ORDER BY urgent_sent_at IS NULL, urgent_sent_at, id`, since.Unix(), since.Unix(), minScore)
 	if err != nil {
@@ -260,6 +262,13 @@ func (s *Store) UrgentTitles(ctx context.Context, minScore int, since time.Time)
 // MarkUrgentSent records that an urgent ping went out.
 func (s *Store) MarkUrgentSent(ctx context.Context, id int64, now time.Time) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE items SET urgent_sent_at = ? WHERE id = ?`, now.Unix(), id)
+	return err
+}
+
+// MarkUrgentRejected records that Telegram refused a ping for good: it is not
+// sent again, and since the reader never saw it, UrgentTitles leaves it out.
+func (s *Store) MarkUrgentRejected(ctx context.Context, id int64, now time.Time) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE items SET urgent_sent_at = ?, urgent_rejected = 1 WHERE id = ?`, now.Unix(), id)
 	return err
 }
 
