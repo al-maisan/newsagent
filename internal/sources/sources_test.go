@@ -2,6 +2,7 @@ package sources
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -264,5 +265,28 @@ func TestPlain(t *testing.T) {
 		if got := plain(in); got != want {
 			t.Errorf("plain(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+type errKV struct{ memKV }
+
+func (errKV) Get(context.Context, string) (string, error) { return "", errors.New("db down") }
+
+func TestXFetchBudgetFailsClosed(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls++ }))
+	defer srv.Close()
+	x := &X{Client: srv.Client(), BaseURL: srv.URL, MaxPerPoll: 10, MaxPerDay: 20, MinInterval: time.Hour, HomeTimeline: true}
+	now := time.Date(2026, 11, 24, 10, 0, 0, 0, time.UTC)
+
+	if _, err := x.Fetch(context.Background(), errKV{memKV{}}, now); err == nil || !strings.Contains(err.Error(), "db down") {
+		t.Fatalf("kv error: got %v", err)
+	}
+	bad := memKV{kvXReads + "2026-11-24": "garbage"}
+	if _, err := x.Fetch(context.Background(), bad, now); err == nil || !strings.Contains(err.Error(), "bad value") {
+		t.Fatalf("corrupt counter: got %v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("X was called %d times despite an unreadable budget", calls)
 	}
 }
