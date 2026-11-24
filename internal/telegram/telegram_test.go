@@ -3,10 +3,13 @@ package telegram
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"unicode/utf16"
 )
 
 func TestSend(t *testing.T) {
@@ -59,5 +62,67 @@ func TestSplit(t *testing.T) {
 	}
 	if got := Split("a\nb", 10); len(got) != 1 || got[0] != "a\nb" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestIsRejected(t *testing.T) {
+	cases := []struct {
+		err  error
+		want bool
+	}{
+		{&APIError{400, "Bad Request: can't parse entities: unclosed tag"}, true},
+		{&APIError{400, "Bad Request: message is too long"}, true},
+		{fmt.Errorf("wrapped: %w", &APIError{400, "Bad Request: message text is empty"}), true},
+		{&APIError{400, "Bad Request: chat not found"}, false},
+		{&APIError{429, "Too Many Requests: retry after 5"}, false},
+		{&APIError{403, "Forbidden: bot was blocked by the user"}, false},
+		{errors.New("can't parse entities"), false},
+	}
+	for _, tc := range cases {
+		if got := IsRejected(tc.err); got != tc.want {
+			t.Errorf("IsRejected(%v) = %v, want %v", tc.err, got, tc.want)
+		}
+	}
+}
+
+func TestSendFallsBackToPlainText(t *testing.T) {
+	// plain: how the plain-text resend ends.
+	for _, plain := range []string{"ok", "rejected", "down"} {
+		var reqs []map[string]any
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var m map[string]any
+			json.NewDecoder(r.Body).Decode(&m)
+			reqs = append(reqs, m)
+			switch {
+			case m["parse_mode"] == "HTML" || plain == "rejected":
+				w.WriteHeader(400)
+				w.Write([]byte(`{"ok":false,"description":"Bad Request: can't parse entities"}`))
+			case plain == "down":
+				w.WriteHeader(502)
+				w.Write([]byte(`{"ok":false,"description":"Bad Gateway"}`))
+			default:
+				w.Write([]byte(`{"ok":true}`))
+			}
+		}))
+		c := &Client{HTTP: srv.Client(), BaseURL: srv.URL, Token: "T", ChatID: "1"}
+		err := c.Send(context.Background(), `<b>A &amp; B</b> <a href="https://e.com/?a=1&amp;b=2">HN</a>`)
+		srv.Close()
+		if len(reqs) != 2 || reqs[1]["parse_mode"] != nil || reqs[1]["text"] != "A & B HN https://e.com/?a=1&b=2" {
+			t.Fatalf("plain %s: bad requests %v", plain, reqs)
+		}
+		if (plain == "ok") != (err == nil) || (plain == "rejected") != IsRejected(err) {
+			t.Fatalf("plain %s: err %v (rejected=%v)", plain, err, IsRejected(err))
+		}
+	}
+}
+
+func TestPlainTextClipsUTF16(t *testing.T) {
+	s := PlainText(strings.Repeat("😀", MaxLen))
+	n := 0
+	for _, r := range s {
+		n += utf16.RuneLen(r)
+	}
+	if n > MaxLen || !strings.HasSuffix(s, "…") {
+		t.Fatalf("len %d", n)
 	}
 }
