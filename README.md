@@ -2,12 +2,12 @@
 
 Watches tech news sites and your X home timeline, and keeps you up to date on Telegram.
 
-- **Sources:** Hacker News top stories, any RSS/Atom feed, and X (official API): your mentions, the posts of accounts you pick, and your home timeline.
+- **Sources:** Hacker News top stories, any RSS/Atom feed, X (official API): your mentions, the posts of accounts you pick, and your home timeline, and the hot pages of subreddits you pick (official API; Reddit shut its RSS feeds down in November 2026).
 - **Ranking:** Claude rates every new item 0–10 against your interests (set in the config). It runs through the Claude Code CLI (`claude -p`) with your Claude subscription, so there are no API credit costs. Usage counts against your plan's limits.
 - **Urgent pings:** items scoring 9 or higher are sent right away, at most 3 per poll, with repeats of the same story skipped.
 - **Digests:** twice a day, the items scoring 6 or higher are grouped into short themed sections. An optional hourly mode adds short updates in between (see the table below).
 - **X priorities:** every mention of you is pinged right away. Every post from the accounts in `x.accounts` is in the digest, and it's pinged when it scores 9 or higher. This is the official-API version of X's notification bell.
-- **Alarms:** a ⚠️ Telegram message when something stops newsagent: the Claude plan's usage limit (with the reset time), X credits used up (402), X access denied (401, or 403 on your own endpoints), and the daily X read cap reached. While a problem lasts it is repeated every 6 hours (the daily cap once per day); it ends when things work again.
+- **Alarms:** a ⚠️ Telegram message when something stops newsagent: the Claude plan's usage limit (with the reset time), X credits used up (402), X access denied (401, or 403 on your own endpoints), the daily X read cap reached, and Reddit access denied (401). While a problem lasts it is repeated every 6 hours (the daily cap once per day); it ends when things work again.
 
 ## How it works
 

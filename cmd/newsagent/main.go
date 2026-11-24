@@ -80,7 +80,7 @@ func run() error {
 		UrgentScore:   cfg.Thresholds.Urgent,
 		DigestScore:   cfg.Thresholds.Digest,
 		MaxUrgentPoll: cfg.Thresholds.MaxUrgentPoll,
-		Labels:        map[string]string{"hn": "HN", "x": "X"},
+		Labels:        map[string]string{"hn": "HN", "x": "X", "reddit": "Reddit"},
 	}
 	if cfg.HN.Enabled {
 		hn := &sources.HN{Client: hc, BaseURL: sources.HNBaseURL, TopN: cfg.HN.TopN}
@@ -108,6 +108,20 @@ func run() error {
 		a.Sources = append(a.Sources, app.Source{Name: "x", Fetch: func(ctx context.Context) ([]store.Item, error) {
 			return x.Fetch(ctx, st, time.Now())
 		}})
+	}
+
+	if cfg.Reddit.Enabled {
+		rd := &sources.Reddit{
+			Client:       hc,
+			BaseURL:      sources.RedditBaseURL,
+			TokenURL:     sources.RedditTokenURL,
+			ClientID:     cfg.Secrets.RedditClientID,
+			ClientSecret: cfg.Secrets.RedditClientSecret,
+			Subreddits:   cfg.Reddit.Subreddits,
+			TopN:         cfg.Reddit.TopN,
+			Alarms:       a,
+		}
+		a.Sources = append(a.Sources, app.Source{Name: "reddit", Fetch: rd.Fetch})
 	}
 
 	switch cmd {

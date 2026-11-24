@@ -68,6 +68,11 @@ type Config struct {
 		Enabled bool `json:"enabled"`
 		TopN    int  `json:"top_n"`
 	} `json:"hn"`
+	Reddit struct {
+		Enabled    bool     `json:"enabled"`
+		Subreddits []string `json:"subreddits"`
+		TopN       int      `json:"top_n"`
+	} `json:"reddit"`
 	X struct {
 		Enabled        bool     `json:"enabled"`
 		MaxPerPoll     int      `json:"max_posts_per_poll"`
@@ -100,15 +105,21 @@ type Config struct {
 
 // Secrets come from the environment only, never from the config file.
 type Secrets struct {
-	ClaudeOAuthToken string
-	TelegramToken    string
-	XConsumerKey     string
-	XConsumerSecret  string
-	XAccessToken     string
-	XAccessSecret    string
+	ClaudeOAuthToken   string
+	TelegramToken      string
+	XConsumerKey       string
+	XConsumerSecret    string
+	XAccessToken       string
+	XAccessSecret      string
+	RedditClientID     string
+	RedditClientSecret string
 }
 
 var xUsername = regexp.MustCompile(`^[A-Za-z0-9_]{1,15}$`)
+
+// subName is a subreddit: letters, digits and underscores, starting with
+// a letter or digit (no r/ prefix).
+var subName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_]{1,20}$`)
 
 // chatID is a Telegram chat id: a number (negative for groups) or a public
 // channel's @username.
@@ -127,6 +138,7 @@ func Load(path string, getenv func(string) string) (*Config, error) {
 	c.MaxAge = Duration(48 * time.Hour)
 	c.Timezone = "UTC"
 	c.HN.TopN = 30
+	c.Reddit.TopN = 30
 	c.X.MaxPerPoll = 25
 	c.X.MaxPerDay = 200
 	c.X.MinInterval = Duration(time.Hour)
@@ -146,12 +158,14 @@ func Load(path string, getenv func(string) string) (*Config, error) {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
 	c.Secrets = Secrets{
-		ClaudeOAuthToken: getenv("CLAUDE_CODE_OAUTH_TOKEN"),
-		TelegramToken:    getenv("TELEGRAM_BOT_TOKEN"),
-		XConsumerKey:     getenv("X_CONSUMER_KEY"),
-		XConsumerSecret:  getenv("X_CONSUMER_SECRET"),
-		XAccessToken:     getenv("X_ACCESS_TOKEN"),
-		XAccessSecret:    getenv("X_ACCESS_TOKEN_SECRET"),
+		ClaudeOAuthToken:   getenv("CLAUDE_CODE_OAUTH_TOKEN"),
+		TelegramToken:      getenv("TELEGRAM_BOT_TOKEN"),
+		XConsumerKey:       getenv("X_CONSUMER_KEY"),
+		XConsumerSecret:    getenv("X_CONSUMER_SECRET"),
+		XAccessToken:       getenv("X_ACCESS_TOKEN"),
+		XAccessSecret:      getenv("X_ACCESS_TOKEN_SECRET"),
+		RedditClientID:     getenv("REDDIT_CLIENT_ID"),
+		RedditClientSecret: getenv("REDDIT_CLIENT_SECRET"),
 	}
 	return c, c.validate()
 }
@@ -172,7 +186,7 @@ func (c *Config) validate() error {
 	if c.HN.Enabled {
 		check(c.HN.TopN > 0 && c.HN.TopN <= 500, "hn.top_n must be 1..500")
 	}
-	names := map[string]bool{"hn": true, "x": true}
+	names := map[string]bool{"hn": true, "x": true, "reddit": true}
 	for _, f := range c.Feeds {
 		check(f.Name != "" && !names[f.Name], fmt.Sprintf("feed name %q is empty or not unique", f.Name))
 		check(strings.HasPrefix(f.URL, "https://") || strings.HasPrefix(f.URL, "http://"), fmt.Sprintf("feed %q: url must be http(s)", f.Name))
@@ -193,6 +207,20 @@ func (c *Config) validate() error {
 		s := c.Secrets
 		check(s.XConsumerKey != "" && s.XConsumerSecret != "" && s.XAccessToken != "" && s.XAccessSecret != "",
 			"x is enabled but X_CONSUMER_KEY, X_CONSUMER_SECRET, X_ACCESS_TOKEN or X_ACCESS_TOKEN_SECRET is missing")
+	}
+	if c.Reddit.Enabled {
+		check(len(c.Reddit.Subreddits) > 0, "reddit is enabled but reddit.subreddits is empty")
+		check(len(c.Reddit.Subreddits) <= 50, "reddit.subreddits: at most 50")
+		check(c.Reddit.TopN > 0 && c.Reddit.TopN <= 100, "reddit.top_n must be 1..100")
+		rseen := map[string]bool{}
+		for _, s := range c.Reddit.Subreddits {
+			check(subName.MatchString(s), fmt.Sprintf("reddit.subreddits: %q is not a valid subreddit name (no r/ prefix)", s))
+			check(!rseen[strings.ToLower(s)], fmt.Sprintf("reddit.subreddits: %q is listed twice", s))
+			rseen[strings.ToLower(s)] = true
+		}
+		s := c.Secrets
+		check(s.RedditClientID != "" && s.RedditClientSecret != "",
+			"reddit is enabled but REDDIT_CLIENT_ID or REDDIT_CLIENT_SECRET is missing")
 	}
 	check(c.LLM.Model != "" && c.LLM.ClaudePath != "", "llm.model or llm.claude_path is empty")
 	check(strings.HasPrefix(c.LLM.HomeDir, "/"), "llm.home_dir must be an absolute path")

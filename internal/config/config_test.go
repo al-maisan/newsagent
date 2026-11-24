@@ -24,6 +24,9 @@ var baseEnv = map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "k", "TELEGRAM_BOT_TO
 var xEnv = map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "k", "TELEGRAM_BOT_TOKEN": "t",
 	"X_CONSUMER_KEY": "a", "X_CONSUMER_SECRET": "b", "X_ACCESS_TOKEN": "c", "X_ACCESS_TOKEN_SECRET": "d"}
 
+var rEnv = map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "k", "TELEGRAM_BOT_TOKEN": "t",
+	"REDDIT_CLIENT_ID": "i", "REDDIT_CLIENT_SECRET": "s"}
+
 func TestLoadDefaults(t *testing.T) {
 	p := write(t, `{"llm":{"interests":"tech"},"telegram":{"chat_id":"1"},"hn":{"enabled":true},
 		"feeds":[{"name":"lwn","url":"https://lwn.net/headlines/rss"}]}`)
@@ -72,6 +75,32 @@ func TestLoadX(t *testing.T) {
 		if want == "" && err != nil || want != "" && (err == nil || !strings.Contains(err.Error(), want)) {
 			t.Errorf("%s: got %v, want %q", prefix, err, want)
 		}
+	}
+}
+
+func TestLoadReddit(t *testing.T) {
+	cases := map[string]string{
+		`{"reddit":{"enabled":true}`:                                                  "subreddits is empty",
+		`{"reddit":{"enabled":true,"subreddits":["r/golang"]}`:                        "not a valid subreddit",
+		`{"reddit":{"enabled":true,"subreddits":["_go"]}`:                             "not a valid subreddit",
+		`{"reddit":{"enabled":true,"subreddits":["golang","Golang"]}`:                 "listed twice",
+		`{"reddit":{"enabled":true,"subreddits":["go"],"top_n":0}`:                    "top_n must be 1..100",
+		`{"reddit":{"enabled":true,"subreddits":["go","a_b","c1234567890123456789"]}`: "",
+	}
+	for cfg, want := range cases {
+		_, err := Load(write(t, cfg+`,"llm":{"interests":"x"},"telegram":{"chat_id":"1"}}`), env(rEnv))
+		if want == "" && err != nil || want != "" && (err == nil || !strings.Contains(err.Error(), want)) {
+			t.Errorf("%s: got %v, want %q", cfg, err, want)
+		}
+	}
+	// Missing secrets.
+	_, err := Load(write(t, `{"reddit":{"enabled":true,"subreddits":["go"]},"llm":{"interests":"x"},"telegram":{"chat_id":"1"}}`), env(baseEnv))
+	if err == nil || !strings.Contains(err.Error(), "REDDIT_CLIENT_ID") {
+		t.Errorf("missing reddit secrets: got %v", err)
+	}
+	// A feed may not shadow the reddit source name.
+	if _, err := Load(write(t, `{"feeds":[{"name":"reddit","url":"https://a"}],"llm":{"interests":"x"},"telegram":{"chat_id":"1"}}`), env(baseEnv)); err == nil {
+		t.Error("feed named reddit: want error")
 	}
 }
 

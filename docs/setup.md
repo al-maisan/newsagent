@@ -9,6 +9,7 @@ Target: an Ubuntu/Debian host with systemd (e.g. `shb`). All commands are one-li
 | `CLAUDE_CODE_OAUTH_TOKEN` | run `claude setup-token` on a machine with a browser (needs a Pro/Max plan). The token is valid for one year. |
 | `TELEGRAM_BOT_TOKEN` | Telegram: talk to @BotFather → `/newbot` |
 | `X_CONSUMER_KEY`, `X_CONSUMER_SECRET`, `X_ACCESS_TOKEN`, `X_ACCESS_TOKEN_SECRET` | developer.x.com → your app → "Keys and tokens". The app needs Read permission. Generate the access token for your own account. Buy API credits (pay-per-use). |
+| `REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET` | reddit.com/prefs/apps → "create app" → type "script", any name, any redirect URI (it is never used). Copy the app's id (under the name) and its secret. Only needed when `reddit.enabled` is true. |
 
 Telegram chat id: send any message to your new bot, then run:
 
@@ -85,6 +86,9 @@ Turn it off again with `sudo systemctl disable --now newsagent-hourly.timer`.
 | `feeds` | `[]` | RSS/Atom feeds: `{"name": …, "url": …}`; names unique and not `hn` or `x`, URLs `http(s)://`. Add `"private": true` for a feed on a LAN/tailnet hostname (only for hosts you control); feeds given by IP address work without it |
 | `hn.enabled` | `false` | read Hacker News top stories |
 | `hn.top_n` | `30` | number of HN top stories to consider (1..500) |
+| `reddit.enabled` | `false` | read the hot pages of subreddits (needs `REDDIT_CLIENT_ID` and `REDDIT_CLIENT_SECRET`; Reddit shut down its RSS feeds in November 2026) |
+| `reddit.subreddits` | `[]` | subreddit names without `r/`, e.g. `["golang", "programming"]` (at most 50) |
+| `reddit.top_n` | `30` | hot posts considered per subreddit (1..100) |
 | `x.enabled` | `false` | read X (needs the four `X_*` secrets) |
 | `x.max_posts_per_poll` | `25` | 5..100, per request |
 | `x.max_posts_per_day` | `200` | hard daily cap (UTC day) on billed reads |

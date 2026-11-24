@@ -6,6 +6,11 @@
     "enabled": true,
     "top_n": 30
   },
+  "reddit": {
+    "enabled": false,
+    "subreddits": ["programming"],
+    "top_n": 30
+  },
   "feeds": [
     {
       "name": "Lobsters",
