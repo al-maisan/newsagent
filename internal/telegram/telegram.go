@@ -32,15 +32,19 @@ type Client struct {
 }
 
 // Send posts one HTML message (at most MaxLen characters). If Telegram
-// rejects it, Send retries once as plain text (see PlainText) and returns
-// the original error only if that fails too.
+// rejects it, Send retries once as plain text (see PlainText). It returns a
+// rejection only if the plain text was rejected too; any other failure of
+// the retry is returned as is, so the caller retries later.
 func (c *Client) Send(ctx context.Context, html string) error {
 	err := c.send(ctx, html, "HTML")
 	if !IsRejected(err) {
 		return err
 	}
 	if perr := c.send(ctx, PlainText(html), ""); perr != nil {
-		return err
+		if IsRejected(perr) {
+			return err
+		}
+		return fmt.Errorf("plain-text resend after %v: %w", err, perr)
 	}
 	slog.Warn("telegram rejected HTML, sent as plain text", "err", err)
 	return nil

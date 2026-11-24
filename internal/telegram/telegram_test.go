@@ -86,27 +86,32 @@ func TestIsRejected(t *testing.T) {
 }
 
 func TestSendFallsBackToPlainText(t *testing.T) {
-	for _, plainOK := range []bool{true, false} {
+	// plain: how the plain-text resend ends.
+	for _, plain := range []string{"ok", "rejected", "down"} {
 		var reqs []map[string]any
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			var m map[string]any
 			json.NewDecoder(r.Body).Decode(&m)
 			reqs = append(reqs, m)
-			if m["parse_mode"] == "HTML" || !plainOK {
+			switch {
+			case m["parse_mode"] == "HTML" || plain == "rejected":
 				w.WriteHeader(400)
 				w.Write([]byte(`{"ok":false,"description":"Bad Request: can't parse entities"}`))
-				return
+			case plain == "down":
+				w.WriteHeader(502)
+				w.Write([]byte(`{"ok":false,"description":"Bad Gateway"}`))
+			default:
+				w.Write([]byte(`{"ok":true}`))
 			}
-			w.Write([]byte(`{"ok":true}`))
 		}))
 		c := &Client{HTTP: srv.Client(), BaseURL: srv.URL, Token: "T", ChatID: "1"}
 		err := c.Send(context.Background(), `<b>A &amp; B</b> <a href="https://e.com/?a=1&amp;b=2">HN</a>`)
 		srv.Close()
 		if len(reqs) != 2 || reqs[1]["parse_mode"] != nil || reqs[1]["text"] != "A & B HN https://e.com/?a=1&b=2" {
-			t.Fatalf("plainOK=%v: bad requests %v", plainOK, reqs)
+			t.Fatalf("plain %s: bad requests %v", plain, reqs)
 		}
-		if plainOK != (err == nil) || (err != nil && !IsRejected(err)) {
-			t.Fatalf("plainOK=%v: err %v", plainOK, err)
+		if (plain == "ok") != (err == nil) || (plain == "rejected") != IsRejected(err) {
+			t.Fatalf("plain %s: err %v (rejected=%v)", plain, err, IsRejected(err))
 		}
 	}
 }
