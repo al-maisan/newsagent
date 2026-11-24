@@ -21,6 +21,7 @@ const XBaseURL = "https://api.x.com/2"
 type KV interface {
 	Get(ctx context.Context, key string) (string, error)
 	Set(ctx context.Context, key, value string) error
+	DeleteBefore(ctx context.Context, prefix, bound string) error
 }
 
 // X reads, in this order: mentions of the authenticated user, new posts of
@@ -106,6 +107,9 @@ func (x *X) Fetch(ctx context.Context, kv KV, now time.Time) ([]store.Item, erro
 	}
 	// The read counter guards paid reads: if it can't be read, read nothing.
 	b := &budget{kv: kv, key: kvXReads + now.UTC().Format("2006-01-02"), max: x.MaxPerDay}
+	if err := kv.DeleteBefore(ctx, kvXReads, b.key); err != nil {
+		slog.Warn("x: dropping old read counters failed", "err", err)
+	}
 	v, err := kv.Get(ctx, b.key)
 	if err != nil {
 		return nil, fmt.Errorf("x read budget: %w", err)
