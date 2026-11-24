@@ -101,7 +101,7 @@ func (a *App) score(ctx context.Context, now time.Time) error {
 		if err != nil || len(items) == 0 {
 			return err
 		}
-		reported, err := a.Store.RecentUrgentTitles(ctx, now.Add(-urgentWindow))
+		reported, err := a.Store.UrgentTitles(ctx, a.UrgentScore, now.Add(-urgentWindow))
 		if err != nil {
 			return err
 		}

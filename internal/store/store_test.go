@@ -42,6 +42,10 @@ func TestStore(t *testing.T) {
 		t.Fatalf("item 2 should be given up, got %v", un)
 	}
 
+	// Scored 9 but not sent yet: already counts as reported.
+	if titles, _ := s.UrgentTitles(ctx, 9, now.Add(-time.Hour)); len(titles) != 1 || titles[0] != "one" {
+		t.Fatalf("pending titles %v", titles)
+	}
 	urg, err := s.PendingUrgent(ctx, 9, now.Add(-time.Hour), 5)
 	if err != nil || len(urg) != 1 || urg[0].Summary != "s" {
 		t.Fatalf("urgent: %v %v", urg, err)
@@ -52,7 +56,7 @@ func TestStore(t *testing.T) {
 	if urg, _ = s.PendingUrgent(ctx, 9, now.Add(-time.Hour), 5); len(urg) != 0 {
 		t.Fatalf("urgent not marked")
 	}
-	if titles, _ := s.RecentUrgentTitles(ctx, now.Add(-time.Hour)); len(titles) != 1 || titles[0] != "one" {
+	if titles, _ := s.UrgentTitles(ctx, 9, now.Add(-time.Hour)); len(titles) != 1 || titles[0] != "one" {
 		t.Fatalf("titles %v", titles)
 	}
 

@@ -193,10 +193,14 @@ func (s *Store) PendingUrgent(ctx context.Context, minScore int, since time.Time
 		ORDER BY priority = 'ping' DESC, score DESC, id LIMIT ?`, minScore, since.Unix(), limit)
 }
 
-// RecentUrgentTitles returns titles of items pinged after since, so the model
-// can flag repeats of the same story.
-func (s *Store) RecentUrgentTitles(ctx context.Context, since time.Time) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT title FROM items WHERE urgent_sent_at > ? ORDER BY urgent_sent_at`, since.Unix())
+// UrgentTitles returns titles of items pinged after since and of items
+// PendingUrgent would still send, so the model can flag repeats of the same
+// story even before the first one went out.
+func (s *Store) UrgentTitles(ctx context.Context, minScore int, since time.Time) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT title FROM items
+		WHERE urgent_sent_at > ? OR (urgent_sent_at IS NULL AND fetched_at > ?
+			AND (priority = 'ping' OR (score >= ? AND duplicate = 0)))
+		ORDER BY urgent_sent_at IS NULL, urgent_sent_at, id`, since.Unix(), since.Unix(), minScore)
 	if err != nil {
 		return nil, err
 	}
