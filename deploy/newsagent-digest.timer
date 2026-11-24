@@ -1,0 +1,9 @@
+[Unit]
+Description=newsagent digest at 08:00 and 18:00 Istanbul time
+
+[Timer]
+OnCalendar=*-*-* 08,18:00:00 Europe/Istanbul
+Persistent=true
+
+[Install]
+WantedBy=timers.target

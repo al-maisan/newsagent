@@ -1,0 +1,32 @@
+[Unit]
+Description=newsagent digest
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/newsagent -config /etc/newsagent/config.json digest
+EnvironmentFile=/etc/newsagent/secrets.env
+User=newsagent
+DynamicUser=yes
+StateDirectory=newsagent
+TimeoutStartSec=15min
+# The Claude CLI uses a JIT runtime, so no MemoryDenyWriteExecute.
+UMask=0077
+CapabilityBoundingSet=
+PrivateDevices=yes
+ProtectHome=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources

@@ -1,0 +1,58 @@
+{
+  "db_path": "/var/lib/newsagent/newsagent.db",
+  "timezone": "Europe/Istanbul",
+  "max_age": "48h",
+  "hn": {
+    "enabled": true,
+    "top_n": 30
+  },
+  "feeds": [
+    {
+      "name": "Lobsters",
+      "url": "https://lobste.rs/rss"
+    },
+    {
+      "name": "Ars",
+      "url": "https://feeds.arstechnica.com/arstechnica/index"
+    },
+    {
+      "name": "Verge",
+      "url": "https://www.theverge.com/rss/index.xml"
+    },
+    {
+      "name": "LWN",
+      "url": "https://lwn.net/headlines/rss"
+    },
+    {
+      "name": "Optech",
+      "url": "https://bitcoinops.org/feed.xml"
+    },
+    {
+      "name": "Delving",
+      "url": "https://delvingbitcoin.org/latest.rss"
+    }
+  ],
+  "x": {
+    "enabled": true,
+    "max_posts_per_poll": 25,
+    "max_posts_per_day": 200,
+    "min_interval": "1h",
+    "exclude_replies": true
+  },
+  "llm": {
+    "claude_path": "claude",
+    "home_dir": "/var/lib/newsagent",
+    "model": "claude-opus-5-5",
+    "score_effort": "low",
+    "digest_effort": "medium",
+    "interests": "Software engineer. Cares about: AI and LLMs (models, agents, tooling), Bitcoin protocol and ecosystem, Linux and open source, security incidents and vulnerabilities, Go and Rust, major moves by big tech companies. Not interested in: gaming, entertainment, gadget reviews, celebrity news."
+  },
+  "thresholds": {
+    "urgent": 9,
+    "digest": 6,
+    "max_urgent_per_poll": 3
+  },
+  "telegram": {
+    "chat_id": "REPLACE_WITH_CHAT_ID"
+  }
+}
