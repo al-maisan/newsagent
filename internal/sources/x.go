@@ -23,6 +23,22 @@ type KV interface {
 	Set(ctx context.Context, key, value string) error
 }
 
+// Alarms tells the reader about problems that stop a source. Raise sends an
+// alarm once, then again every repeat while the problem lasts (repeat 0:
+// once per episode); Clear ends the episode.
+type Alarms interface {
+	Raise(ctx context.Context, key, title, detail string, repeat time.Duration)
+	Clear(ctx context.Context, key string)
+}
+
+// Alarm keys of the X source.
+const (
+	AlarmXCredits  = "x_credits"
+	AlarmXAuth     = "x_auth"
+	AlarmXDailyCap = "x_daily_cap"
+	alarmRepeat    = 6 * time.Hour
+)
+
 // X reads, in this order: mentions of the authenticated user, new posts of
 // selected accounts, and the home timeline. X bills per post read, so reads
 // are capped per request and per UTC day; the order decides what gets the
@@ -38,6 +54,7 @@ type X struct {
 	Mentions       bool
 	Accounts       []string // usernames whose posts always reach the digest
 	HomeTimeline   bool
+	Alarms         Alarms // optional
 }
 
 const (
@@ -117,8 +134,11 @@ func (x *X) Fetch(ctx context.Context, kv KV, now time.Time) ([]store.Item, erro
 	}
 	if b.left() < 5 { // the API's minimum max_results is 5
 		slog.Info("x daily read budget used up", "used", b.used, "max", x.MaxPerDay)
+		x.raise(ctx, AlarmXDailyCap, "X daily read cap reached",
+			fmt.Sprintf("newsagent has read %d of its %d posts for today (UTC day). X reads resume after 00:00 UTC.", b.used, x.MaxPerDay), 0)
 		return nil, nil
 	}
+	x.clear(ctx, AlarmXDailyCap)
 	uid, err := x.userID(ctx, kv)
 	if err != nil {
 		return nil, err
@@ -304,5 +324,33 @@ func (x *X) get(ctx context.Context, path string, q url.Values, v any) error {
 		u += "?" + q.Encode()
 	}
 	hdr := http.Header{"Authorization": {x.Auth.header(http.MethodGet, base, q)}}
-	return getJSON(ctx, x.Client, u, hdr, v)
+	err := getJSON(ctx, x.Client, u, hdr, v)
+	var he *HTTPError
+	switch {
+	case err == nil:
+		x.clear(ctx, AlarmXCredits)
+		x.clear(ctx, AlarmXAuth)
+	case !errors.As(err, &he):
+	case he.Status == http.StatusPaymentRequired:
+		x.raise(ctx, AlarmXCredits, "X API credits used up",
+			"X answered 402 Payment Required: no X reads until you buy credits or raise the spend cap (console.x.com → Billing → Credits).", alarmRepeat)
+	// 403 on another account's posts (e.g. a protected account) is not an
+	// auth problem; on the user's own endpoints it is.
+	case he.Status == http.StatusUnauthorized || he.Status == http.StatusForbidden && !strings.HasSuffix(path, "/tweets"):
+		x.raise(ctx, AlarmXAuth, "X API access denied",
+			fmt.Sprintf("X answered %d: check the X keys in /etc/newsagent/secrets.env and the app's permissions on console.x.com. Details: %s", he.Status, he.Body), alarmRepeat)
+	}
+	return err
+}
+
+func (x *X) raise(ctx context.Context, key, title, detail string, repeat time.Duration) {
+	if x.Alarms != nil {
+		x.Alarms.Raise(ctx, key, title, detail, repeat)
+	}
+}
+
+func (x *X) clear(ctx context.Context, key string) {
+	if x.Alarms != nil {
+		x.Alarms.Clear(ctx, key)
+	}
 }

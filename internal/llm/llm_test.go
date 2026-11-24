@@ -135,3 +135,15 @@ func TestCallTimeout(t *testing.T) {
 		t.Fatalf("timeout took %s", d)
 	}
 }
+
+func TestUsageLimit(t *testing.T) {
+	c, _ := fakeCLI(t, `{"type":"result","subtype":"success","is_error":true,"result":"You've hit your 5-hour limit · resets 7:30am (UTC)"}`, 1)
+	_, err := c.Digest(context.Background(), []store.Item{{ID: 1}})
+	if !IsUsageLimit(err) || !IsTransient(err) || !strings.Contains(err.Error(), "resets 7:30am (UTC)") {
+		t.Fatalf("want usage-limit error with the CLI message, got %v", err)
+	}
+	c, _ = fakeCLI(t, `{"subtype":"success","is_error":true,"result":"overloaded","api_error_status":529}`, 1)
+	if _, err := c.Digest(context.Background(), []store.Item{{ID: 1}}); IsUsageLimit(err) || !IsTransient(err) {
+		t.Fatalf("overload is transient but not a usage limit: %v", err)
+	}
+}

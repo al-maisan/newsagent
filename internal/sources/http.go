@@ -39,10 +39,18 @@ func get(ctx context.Context, c *http.Client, url string, hdr http.Header) ([]by
 		return nil, fmt.Errorf("read body: %w", err)
 	}
 	if resp.StatusCode/100 != 2 {
-		return nil, fmt.Errorf("http %d: %s", resp.StatusCode, clip(string(body), 200))
+		return nil, &HTTPError{Status: resp.StatusCode, Body: clip(string(body), 200)}
 	}
 	return body, nil
 }
+
+// HTTPError is a non-2xx response.
+type HTTPError struct {
+	Status int
+	Body   string // clipped
+}
+
+func (e *HTTPError) Error() string { return fmt.Sprintf("http %d: %s", e.Status, e.Body) }
 
 func getJSON(ctx context.Context, c *http.Client, url string, hdr http.Header, v any) error {
 	body, err := get(ctx, c, url, hdr)

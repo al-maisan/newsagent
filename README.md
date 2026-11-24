@@ -7,6 +7,7 @@ Watches tech news sites and your X home timeline, and keeps you up to date on Te
 - **Urgent pings:** items scoring 9 or higher are sent right away, at most 3 per poll, with repeats of the same story skipped.
 - **Digests:** twice a day, the items scoring 6 or higher are grouped into short themed sections. An optional hourly mode adds short updates in between (see the table below).
 - **X priorities:** every mention of you is pinged right away. Every post from the accounts in `x.accounts` is in the digest, and it's pinged when it scores 9 or higher. This is the official-API version of X's notification bell.
+- **Alarms:** a ⚠️ Telegram message when something stops newsagent: the Claude plan's usage limit (with the reset time), X credits used up (402), X access denied (401, or 403 on your own endpoints), and the daily X read cap reached. While a problem lasts it is repeated every 6 hours (the daily cap once per day); it ends when things work again.
 
 ## How it works
 
