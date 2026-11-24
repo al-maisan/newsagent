@@ -399,3 +399,21 @@ func TestRaiseOncePerEpisode(t *testing.T) {
 		t.Fatalf("want an alarm after Clear, got %q", *sent)
 	}
 }
+
+func TestPollFutureDatedItemIsUndated(t *testing.T) {
+	future := item("1", "From the future")
+	future.Published = now.Add(30 * 24 * time.Hour)
+	soon := item("2", "Slightly ahead")
+	soon.Published = now.Add(time.Hour) // clock skew: keep the date
+	a, _ := newApp(t, &fakeModel{}, []store.Item{future, soon})
+	if err := a.Poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// Undated items survive the 30-day prune; dated ones don't.
+	if n, err := a.Store.Prune(context.Background(), now.Add(store.Retention+time.Hour)); err != nil || n != 1 {
+		t.Fatalf("want only the slightly-ahead item pruned, got %d %v", n, err)
+	}
+	if n, _ := a.Store.Insert(context.Background(), []store.Item{future}, now.Add(store.Retention+time.Hour)); n != 0 {
+		t.Fatal("future-dated item came back as new after pruning")
+	}
+}
