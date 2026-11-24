@@ -152,8 +152,11 @@ func (c *Config) validate() error {
 		check(c.X.MinInterval > 0, "x.min_interval must be > 0")
 		check(c.X.HomeTimeline || c.X.Mentions || len(c.X.Accounts) > 0, "x is enabled but home_timeline, mentions and accounts are all off")
 		check(len(c.X.Accounts) <= 100, "x.accounts: at most 100")
+		seen := map[string]bool{}
 		for _, a := range c.X.Accounts {
 			check(xUsername.MatchString(a), fmt.Sprintf("x.accounts: %q is not a valid username (no @)", a))
+			check(!seen[strings.ToLower(a)], fmt.Sprintf("x.accounts: %q is listed twice", a))
+			seen[strings.ToLower(a)] = true
 		}
 		s := c.Secrets
 		check(s.XConsumerKey != "" && s.XConsumerSecret != "" && s.XAccessToken != "" && s.XAccessSecret != "",

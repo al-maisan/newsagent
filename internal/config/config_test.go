@@ -60,9 +60,10 @@ func TestLoadErrors(t *testing.T) {
 
 func TestLoadX(t *testing.T) {
 	cases := map[string]string{
-		`{"x":{"enabled":true,"accounts":["@esr"]}`:       "not a valid username",
-		`{"x":{"enabled":true,"home_timeline":false}`:     "all off",
-		`{"x":{"enabled":true,"accounts":["esr","a_b1"]}`: "",
+		`{"x":{"enabled":true,"accounts":["@esr"]}`:              "not a valid username",
+		`{"x":{"enabled":true,"home_timeline":false}`:            "all off",
+		`{"x":{"enabled":true,"accounts":["hdmoore","HDMoore"]}`: "listed twice",
+		`{"x":{"enabled":true,"accounts":["esr","a_b1"]}`:        "",
 	}
 	for prefix, want := range cases {
 		_, err := Load(write(t, prefix+`,"llm":{"interests":"x"},"telegram":{"chat_id":"1"}}`), env(xEnv))
