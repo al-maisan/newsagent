@@ -304,9 +304,21 @@ func (s *Store) MarkDigestSent(ctx context.Context, kind DigestKind, ids []int64
 	return tx.Commit()
 }
 
-// Prune deletes items fetched before cutoff.
-func (s *Store) Prune(ctx context.Context, cutoff time.Time) (int64, error) {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM items WHERE fetched_at < ?`, cutoff.Unix())
+// Retention is how long items are kept after they were fetched. It must be
+// longer than the max_age filter, so a pruned item that is still in its feed
+// is too old to be fetched again as new.
+const Retention = 30 * 24 * time.Hour
+
+// UndatedRetention applies to items without a publish date: max_age can't
+// filter them, so only their row stops them from coming back as new.
+const UndatedRetention = 365 * 24 * time.Hour
+
+// Prune deletes items older than Retention, or UndatedRetention for items
+// without a publish date.
+func (s *Store) Prune(ctx context.Context, now time.Time) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM items
+		WHERE (published_at > 0 AND fetched_at < ?) OR fetched_at < ?`,
+		now.Add(-Retention).Unix(), now.Add(-UndatedRetention).Unix())
 	if err != nil {
 		return 0, err
 	}
