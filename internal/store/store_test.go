@@ -102,15 +102,18 @@ func TestPriority(t *testing.T) {
 	}
 }
 
-func TestMigrateAddsPriority(t *testing.T) {
+func TestMigrateAddsColumns(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "old.db")
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	old := strings.Replace(schema, "priority       TEXT    NOT NULL DEFAULT '',\n", "", 1)
-	if old == schema {
-		t.Fatal("test setup: priority column not found in schema")
+	old := schema
+	for _, col := range []string{"priority       TEXT    NOT NULL DEFAULT '',\n", "score_retries  INTEGER NOT NULL DEFAULT 0,\n"} {
+		if !strings.Contains(old, col) {
+			t.Fatalf("test setup: %q not found in schema", col)
+		}
+		old = strings.Replace(old, col, "", 1)
 	}
 	if _, err := db.Exec(old); err != nil {
 		t.Fatal(err)
@@ -124,5 +127,32 @@ func TestMigrateAddsPriority(t *testing.T) {
 	defer s.Close()
 	if _, err := s.Insert(context.Background(), []Item{{Source: "a", ExtID: "1", Title: "t", URL: "https://e", Priority: PriorityPing}}, time.Now()); err != nil {
 		t.Fatalf("insert after migration: %v", err)
+	}
+	if un, err := s.Unscored(context.Background(), time.Unix(0, 0), 10); err != nil || len(un) != 1 {
+		t.Fatalf("unscored after migration: %v %v", un, err)
+	}
+}
+
+func TestScoreRetriesGiveUp(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	now := time.Now()
+	s.Insert(ctx, []Item{{Source: "a", ExtID: "1", Title: "t", URL: "https://e"}}, now)
+	un, _ := s.Unscored(ctx, now.Add(-time.Hour), 10)
+	for range MaxScoreRetries - 1 {
+		if err := s.CountScoreRetry(ctx, []int64{un[0].ID}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if un, _ = s.Unscored(ctx, now.Add(-time.Hour), 10); len(un) != 1 {
+		t.Fatal("given up too early")
+	}
+	s.CountScoreRetry(ctx, []int64{un[0].ID})
+	if un, _ = s.Unscored(ctx, now.Add(-time.Hour), 10); len(un) != 0 {
+		t.Fatalf("not given up after %d retries", MaxScoreRetries)
 	}
 }

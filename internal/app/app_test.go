@@ -188,3 +188,14 @@ func TestDigestKeepsFollowedAccounts(t *testing.T) {
 		t.Fatalf("followed account dropped: %q", msg)
 	}
 }
+
+func TestPollTransientFailureGivesUpLater(t *testing.T) {
+	m := &fakeModel{scoreErr: &llm.TransientError{Err: errors.New("usage limit")}}
+	a, _ := newApp(t, m, []store.Item{item("1", "X")})
+	for range store.MaxScoreRetries + 2 {
+		a.Poll(context.Background())
+	}
+	if m.scoreCall != store.MaxScoreRetries {
+		t.Fatalf("want %d tries, got %d", store.MaxScoreRetries, m.scoreCall)
+	}
+}
