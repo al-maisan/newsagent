@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestSend(t *testing.T) {
@@ -59,5 +60,29 @@ func TestSplit(t *testing.T) {
 	}
 	if got := Split("a\nb", 10); len(got) != 1 || got[0] != "a\nb" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestSplitKeepsHTMLAndRunesWhole(t *testing.T) {
+	link := `<a href="https://e.com/?a=1&amp;b=2">HN</a>`
+	line := "• " + strings.Repeat("é", 30) + " " + link + " " + link + " " + link
+	for limit := len(link); limit <= len(line); limit++ {
+		parts := Split(line, limit)
+		if got := strings.Join(parts, " "); strings.ReplaceAll(got, " ", "") != strings.ReplaceAll(line, " ", "") {
+			t.Fatalf("limit %d: content changed: %q", limit, parts)
+		}
+		for _, p := range parts {
+			if len(p) > limit || !utf8.ValidString(p) || strings.Count(p, "<a ") != strings.Count(p, "</a>") ||
+				strings.Count(p, "&") != strings.Count(p, ";") {
+				t.Fatalf("limit %d: bad part %q", limit, p)
+			}
+		}
+	}
+	// A single element longer than limit can only be cut inside it, but
+	// never inside a rune.
+	for _, p := range Split(strings.Repeat("é", 10), 5) {
+		if !utf8.ValidString(p) || len(p) > 5 {
+			t.Fatalf("bad part %q", p)
+		}
 	}
 }

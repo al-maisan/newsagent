@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"unicode/utf8"
 )
 
 // BaseURL is the Telegram Bot API endpoint.
@@ -65,7 +66,7 @@ func (c *Client) Send(ctx context.Context, html string) error {
 }
 
 // Split cuts text into chunks of at most limit bytes at line boundaries.
-// Lines longer than limit are cut hard; callers keep lines short.
+// Lines longer than limit are cut by cut, so each chunk stays valid HTML.
 func Split(text string, limit int) []string {
 	var out []string
 	var cur strings.Builder
@@ -75,8 +76,9 @@ func Split(text string, limit int) []string {
 				out = append(out, cur.String())
 				cur.Reset()
 			}
-			out = append(out, line[:limit])
-			line = line[limit:]
+			n := cut(line, limit)
+			out = append(out, line[:n])
+			line = strings.TrimLeft(line[n:], " ")
 		}
 		if cur.Len() > 0 && cur.Len()+1+len(line) > limit {
 			out = append(out, cur.String())
@@ -91,4 +93,52 @@ func Split(text string, limit int) []string {
 		out = append(out, cur.String())
 	}
 	return out
+}
+
+// cut returns where to cut s so that s[:n] is at most limit bytes. It prefers
+// the last space, then the last other point that is outside any tag, element
+// or entity and on a rune boundary. If there is none, it cuts at a rune
+// boundary (Telegram may then reject the part).
+func cut(s string, limit int) int {
+	best, space := 0, 0
+	depth, inTag, closing, inEnt := 0, false, false, false
+	for i := 0; i < len(s) && i <= limit; i++ {
+		if i > 0 && depth == 0 && !inTag && !inEnt && utf8.RuneStart(s[i]) {
+			best = i
+			if s[i] == ' ' {
+				space = i
+			}
+		}
+		switch c := s[i]; {
+		case inTag:
+			if c == '>' {
+				inTag = false
+				if closing {
+					depth--
+				} else {
+					depth++
+				}
+			}
+		case inEnt:
+			inEnt = c != ';'
+		case c == '<':
+			inTag, closing = true, i+1 < len(s) && s[i+1] == '/'
+		case c == '&':
+			inEnt = true
+		}
+	}
+	switch {
+	case space > 0:
+		return space
+	case best > 0:
+		return best
+	}
+	n := limit
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	if n == 0 {
+		return limit
+	}
+	return n
 }
