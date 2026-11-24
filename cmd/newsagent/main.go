@@ -55,12 +55,12 @@ func run() error {
 	defer st.Close()
 
 	loc, _ := time.LoadLocation(cfg.Timezone) // validated in config.Load
-	hc := &http.Client{Timeout: 30 * time.Second, CheckRedirect: sources.CheckRedirect}
 	for _, f := range cfg.Feeds {
 		if strings.HasPrefix(f.URL, "http://") {
 			slog.Warn("feed uses plain http: its content can be changed in transit", "feed", f.Name)
 		}
 	}
+	hc := &http.Client{Timeout: 30 * time.Second, Transport: sources.Transport(cfg.PrivateHosts()), CheckRedirect: sources.CheckRedirect}
 	tg := &telegram.Client{HTTP: hc, BaseURL: telegram.BaseURL, Token: cfg.Secrets.TelegramToken, ChatID: cfg.Telegram.ChatID}
 	a := &app.App{
 		Store: st,

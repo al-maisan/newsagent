@@ -6,18 +6,17 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
+	"syscall"
+	"time"
 )
 
 const maxRedirects = 10
 
-// lookupIP resolves redirect targets (a var for tests).
-var lookupIP = net.DefaultResolver.LookupIPAddr
-
 // CheckRedirect is an http.Client redirect policy: it refuses to downgrade
-// https to http and to follow a redirect to a loopback, private, link-local
-// or unspecified address, so a compromised feed can't point newsagent at
-// internal services. Errors never include the URL (Telegram's holds the bot
-// token).
+// https to http and stops after maxRedirects. Which addresses may be reached
+// is enforced at connect time by Transport. Errors never include the URL
+// (Telegram's holds the bot token).
 func CheckRedirect(req *http.Request, via []*http.Request) error {
 	if len(via) >= maxRedirects {
 		return fmt.Errorf("stopped after %d redirects", maxRedirects)
@@ -25,32 +24,42 @@ func CheckRedirect(req *http.Request, via []*http.Request) error {
 	if via[len(via)-1].URL.Scheme == "https" && req.URL.Scheme != "https" {
 		return errors.New("refusing redirect from https to " + req.URL.Scheme)
 	}
-	host := req.URL.Hostname()
-	ips, err := resolve(req.Context(), host)
-	if err != nil {
-		return fmt.Errorf("redirect to %s: %w", host, err)
-	}
-	for _, ip := range ips {
-		if !public(ip) {
-			return fmt.Errorf("refusing redirect to %s: non-public address %s", host, ip)
-		}
-	}
 	return nil
 }
 
-func resolve(ctx context.Context, host string) ([]net.IP, error) {
-	if ip := net.ParseIP(host); ip != nil {
-		return []net.IP{ip}, nil
+// Transport returns an HTTP transport that refuses to connect to loopback,
+// private, CGNAT, link-local, multicast or unspecified addresses, so a
+// compromised feed can't point newsagent at internal services. The check runs
+// on the address actually dialed, after DNS resolution, so DNS rebinding
+// can't slip past it. Hosts in allow skip the check (and their DNS is
+// trusted): pass only hosts the user marked private or IP literals.
+func Transport(allow []string) *http.Transport {
+	ok := make(map[string]bool, len(allow))
+	for _, h := range allow {
+		ok[strings.ToLower(h)] = true
 	}
-	addrs, err := lookupIP(ctx, host)
-	if err != nil {
-		return nil, err
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, _, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, err
+		}
+		d := net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+		if !ok[strings.ToLower(host)] {
+			d.Control = func(_, address string, _ syscall.RawConn) error {
+				ip, _, err := net.SplitHostPort(address)
+				if err != nil {
+					return err
+				}
+				if p := net.ParseIP(ip); p == nil || !public(p) {
+					return fmt.Errorf("refusing to connect to %s: non-public address %s", host, ip)
+				}
+				return nil
+			}
+		}
+		return d.DialContext(ctx, network, addr)
 	}
-	ips := make([]net.IP, len(addrs))
-	for i, a := range addrs {
-		ips[i] = a.IP
-	}
-	return ips, nil
+	return t
 }
 
 // cgnat is the shared address space (RFC 6598); Tailscale uses it for IPv4.
