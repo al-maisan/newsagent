@@ -15,9 +15,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/option"
-
 	"github.com/al-maisan/newsagent/internal/app"
 	"github.com/al-maisan/newsagent/internal/config"
 	"github.com/al-maisan/newsagent/internal/llm"
@@ -46,7 +43,7 @@ func run() error {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
-	ctx, cancel = context.WithTimeout(ctx, 10*time.Minute)
+	ctx, cancel = context.WithTimeout(ctx, 14*time.Minute)
 	defer cancel()
 
 	st, err := store.Open(cfg.DBPath)
@@ -61,7 +58,9 @@ func run() error {
 	a := &app.App{
 		Store: st,
 		Model: &llm.Claude{
-			Client:       anthropic.NewClient(option.WithAPIKey(cfg.Secrets.AnthropicKey), option.WithRequestTimeout(5*time.Minute)),
+			Path:         cfg.LLM.ClaudePath,
+			HomeDir:      cfg.LLM.HomeDir,
+			OAuthToken:   cfg.Secrets.ClaudeOAuthToken,
 			Model:        cfg.LLM.Model,
 			ScoreEffort:  cfg.LLM.ScoreEffort,
 			DigestEffort: cfg.LLM.DigestEffort,

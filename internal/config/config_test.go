@@ -19,7 +19,7 @@ func write(t *testing.T, s string) string {
 
 func env(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
 
-var baseEnv = map[string]string{"ANTHROPIC_API_KEY": "k", "TELEGRAM_BOT_TOKEN": "t"}
+var baseEnv = map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "k", "TELEGRAM_BOT_TOKEN": "t"}
 
 func TestLoadDefaults(t *testing.T) {
 	p := write(t, `{"llm":{"interests":"tech"},"telegram":{"chat_id":"1"},"hn":{"enabled":true},
@@ -50,7 +50,7 @@ func TestLoadErrors(t *testing.T) {
 		}
 	}
 	_, err := Load(write(t, `{"llm":{"interests":"x"},"telegram":{"chat_id":"1"}}`), env(nil))
-	if err == nil || !strings.Contains(err.Error(), "ANTHROPIC_API_KEY") {
+	if err == nil || !strings.Contains(err.Error(), "CLAUDE_CODE_OAUTH_TOKEN") {
 		t.Errorf("missing secrets: got %v", err)
 	}
 }

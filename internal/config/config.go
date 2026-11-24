@@ -50,6 +50,8 @@ type Config struct {
 		ExcludeReplies bool     `json:"exclude_replies"`
 	} `json:"x"`
 	LLM struct {
+		ClaudePath   string `json:"claude_path"`
+		HomeDir      string `json:"home_dir"`
 		Model        string `json:"model"`
 		ScoreEffort  string `json:"score_effort"`
 		DigestEffort string `json:"digest_effort"`
@@ -69,12 +71,12 @@ type Config struct {
 
 // Secrets come from the environment only, never from the config file.
 type Secrets struct {
-	AnthropicKey    string
-	TelegramToken   string
-	XConsumerKey    string
-	XConsumerSecret string
-	XAccessToken    string
-	XAccessSecret   string
+	ClaudeOAuthToken string
+	TelegramToken    string
+	XConsumerKey     string
+	XConsumerSecret  string
+	XAccessToken     string
+	XAccessSecret    string
 }
 
 var efforts = map[string]bool{"low": true, "medium": true, "high": true, "xhigh": true, "max": true}
@@ -93,6 +95,8 @@ func Load(path string, getenv func(string) string) (*Config, error) {
 	c.X.MaxPerPoll = 25
 	c.X.MaxPerDay = 200
 	c.X.MinInterval = Duration(time.Hour)
+	c.LLM.ClaudePath = "claude"
+	c.LLM.HomeDir = "/var/lib/newsagent"
 	c.LLM.Model = "claude-opus-5-5"
 	c.LLM.ScoreEffort = "low"
 	c.LLM.DigestEffort = "medium"
@@ -106,12 +110,12 @@ func Load(path string, getenv func(string) string) (*Config, error) {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
 	c.Secrets = Secrets{
-		AnthropicKey:    getenv("ANTHROPIC_API_KEY"),
-		TelegramToken:   getenv("TELEGRAM_BOT_TOKEN"),
-		XConsumerKey:    getenv("X_CONSUMER_KEY"),
-		XConsumerSecret: getenv("X_CONSUMER_SECRET"),
-		XAccessToken:    getenv("X_ACCESS_TOKEN"),
-		XAccessSecret:   getenv("X_ACCESS_TOKEN_SECRET"),
+		ClaudeOAuthToken: getenv("CLAUDE_CODE_OAUTH_TOKEN"),
+		TelegramToken:    getenv("TELEGRAM_BOT_TOKEN"),
+		XConsumerKey:     getenv("X_CONSUMER_KEY"),
+		XConsumerSecret:  getenv("X_CONSUMER_SECRET"),
+		XAccessToken:     getenv("X_ACCESS_TOKEN"),
+		XAccessSecret:    getenv("X_ACCESS_TOKEN_SECRET"),
 	}
 	return c, c.validate()
 }
@@ -143,14 +147,15 @@ func (c *Config) validate() error {
 		check(s.XConsumerKey != "" && s.XConsumerSecret != "" && s.XAccessToken != "" && s.XAccessSecret != "",
 			"x is enabled but X_CONSUMER_KEY, X_CONSUMER_SECRET, X_ACCESS_TOKEN or X_ACCESS_TOKEN_SECRET is missing")
 	}
-	check(c.LLM.Model != "", "llm.model is empty")
+	check(c.LLM.Model != "" && c.LLM.ClaudePath != "", "llm.model or llm.claude_path is empty")
+	check(strings.HasPrefix(c.LLM.HomeDir, "/"), "llm.home_dir must be an absolute path")
 	check(efforts[c.LLM.ScoreEffort] && efforts[c.LLM.DigestEffort], "llm efforts must be low|medium|high|xhigh|max")
 	check(strings.TrimSpace(c.LLM.Interests) != "", "llm.interests is empty")
 	check(c.Thresholds.Urgent >= 0 && c.Thresholds.Urgent <= 10 && c.Thresholds.Digest >= 0 && c.Thresholds.Digest <= 10,
 		"thresholds must be 0..10")
 	check(c.Thresholds.MaxUrgentPoll >= 0, "thresholds.max_urgent_per_poll must be >= 0")
 	check(c.Telegram.ChatID != "", "telegram.chat_id is empty")
-	check(c.Secrets.AnthropicKey != "", "ANTHROPIC_API_KEY is missing")
+	check(c.Secrets.ClaudeOAuthToken != "", "CLAUDE_CODE_OAUTH_TOKEN is missing (run: claude setup-token)")
 	check(c.Secrets.TelegramToken != "", "TELEGRAM_BOT_TOKEN is missing")
 	return errors.Join(errs...)
 }

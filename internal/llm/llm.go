@@ -2,22 +2,23 @@
 package llm
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
+	"os/exec"
 	"strings"
-
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/shared/constant"
 
 	"github.com/al-maisan/newsagent/internal/store"
 )
 
-// Claude talks to the Claude API.
+// Claude runs the Claude Code CLI in headless mode (claude -p), so usage is
+// billed to the Claude subscription behind OAuthToken, not to API credits.
 type Claude struct {
-	Client       anthropic.Client
+	Path         string // claude binary
+	HomeDir      string // writable HOME for the CLI's state
+	OAuthToken   string // from "claude setup-token"
 	Model        string
 	ScoreEffort  string
 	DigestEffort string
@@ -181,42 +182,81 @@ Each entry: one or two plain sentences (max 40 words), no markdown, no URLs. Hea
 	return out.Sections, nil
 }
 
+// TransientError marks failures worth retrying later without counting them
+// as a failed attempt (usage limits, overload, timeouts, CLI crashes).
+type TransientError struct{ Err error }
+
+func (e *TransientError) Error() string { return e.Err.Error() }
+func (e *TransientError) Unwrap() error { return e.Err }
+
+// IsTransient reports whether err is a TransientError.
+func IsTransient(err error) bool {
+	var t *TransientError
+	return errors.As(err, &t)
+}
+
+type cliResult struct {
+	IsError          bool            `json:"is_error"`
+	Subtype          string          `json:"subtype"`
+	Result           string          `json:"result"`
+	APIErrorStatus   *int            `json:"api_error_status"`
+	StructuredOutput json.RawMessage `json:"structured_output"`
+}
+
 func (c *Claude) call(ctx context.Context, system string, payload any, schema json.RawMessage, effort string, out any) error {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
-	msg, err := c.Client.Beta.Messages.New(ctx, anthropic.BetaMessageNewParams{
-		Model:     anthropic.Model(c.Model),
-		MaxTokens: 16000,
-		System:    []anthropic.BetaTextBlockParam{{Text: system}},
-		Messages: []anthropic.BetaMessageParam{
-			anthropic.NewBetaUserMessage(anthropic.NewBetaTextBlock(string(data))),
-		},
-		OutputConfig: anthropic.BetaOutputConfigParam{
-			Effort: anthropic.BetaOutputConfigEffort(effort),
-			Format: anthropic.BetaJSONOutputFormatParam{Schema: schema},
-		},
-		// Security news can trip safety classifiers; let the API re-serve
-		// declined requests with a fallback model instead of failing.
-		Fallbacks: anthropic.BetaFallbacksParamUnion{OfDefault: constant.ValueOf[constant.Default]()},
-		Betas:     []anthropic.AnthropicBeta{anthropic.AnthropicBetaServerSideFallback2026_07_01},
-	})
-	if err != nil {
-		return fmt.Errorf("claude: %w", err)
+	cmd := exec.CommandContext(ctx, c.Path, "-p",
+		"--model", c.Model,
+		"--effort", effort,
+		"--system-prompt", system,
+		"--json-schema", string(schema),
+		"--output-format", "json",
+		"--tools", "",
+		"--strict-mcp-config",
+		"--setting-sources", "",
+		"--disable-slash-commands",
+		"--no-session-persistence",
+	)
+	cmd.Dir = c.HomeDir
+	// Explicit environment: no ANTHROPIC_API_KEY can leak in and switch the
+	// CLI to API billing.
+	cmd.Env = []string{
+		"HOME=" + c.HomeDir,
+		"PATH=/usr/local/bin:/usr/bin:/bin",
+		"CLAUDE_CODE_OAUTH_TOKEN=" + c.OAuthToken,
+		"DISABLE_AUTOUPDATER=1",
+		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
 	}
-	if msg.StopReason != anthropic.BetaStopReasonEndTurn {
-		return fmt.Errorf("claude: stop reason %q", msg.StopReason)
+	cmd.Stdin = bytes.NewReader(data)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	runErr := cmd.Run()
+	if ctx.Err() != nil {
+		return &TransientError{fmt.Errorf("claude cli: %w", ctx.Err())}
 	}
-	for _, b := range msg.Content {
-		if t, ok := b.AsAny().(anthropic.BetaTextBlock); ok {
-			if err := json.Unmarshal([]byte(t.Text), out); err != nil {
-				return fmt.Errorf("claude: decode output: %w", err)
-			}
-			return nil
+	var res cliResult
+	if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
+		// No result object: the CLI failed before talking to the model.
+		return &TransientError{fmt.Errorf("claude cli: %v: %s", runErr, clip(strings.TrimSpace(stderr.String()), 300))}
+	}
+	if res.IsError || res.Subtype != "success" {
+		err := fmt.Errorf("claude cli: %s: %s", res.Subtype, clip(res.Result, 300))
+		// Usage limits reset after a few hours; keep the items for later.
+		if s := res.APIErrorStatus; (s != nil && (*s == 429 || *s >= 500)) || strings.Contains(strings.ToLower(res.Result), "limit") {
+			return &TransientError{err}
 		}
+		return err
 	}
-	return errors.New("claude: no text in response")
+	if len(res.StructuredOutput) == 0 || string(res.StructuredOutput) == "null" {
+		return errors.New("claude cli: no structured output")
+	}
+	if err := json.Unmarshal(res.StructuredOutput, out); err != nil {
+		return fmt.Errorf("claude cli: decode output: %w", err)
+	}
+	return nil
 }
 
 func clip(s string, n int) string {
@@ -225,16 +265,4 @@ func clip(s string, n int) string {
 		return s
 	}
 	return string(r[:n]) + "…"
-}
-
-// IsTransient reports whether err is worth retrying later without counting
-// it as a failed attempt (rate limits, overload, network trouble).
-func IsTransient(err error) bool {
-	var apiErr *anthropic.Error
-	if errors.As(err, &apiErr) {
-		s := apiErr.StatusCode
-		return s == 408 || s == 409 || s == 429 || s >= 500
-	}
-	var netErr net.Error
-	return errors.As(err, &netErr) || errors.Is(err, context.DeadlineExceeded)
 }

@@ -11,6 +11,7 @@ User=newsagent
 DynamicUser=yes
 StateDirectory=newsagent
 TimeoutStartSec=15min
+# The Claude CLI uses a JIT runtime, so no MemoryDenyWriteExecute.
 UMask=0077
 CapabilityBoundingSet=
 PrivateDevices=yes
@@ -26,7 +27,6 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 RestrictNamespaces=yes
 RestrictRealtime=yes
 LockPersonality=yes
-MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged @resources
