@@ -25,7 +25,7 @@ type Source struct {
 // Model scores items and writes digests.
 type Model interface {
 	Score(ctx context.Context, items []store.Item, alreadyReported []string) ([]store.Score, error)
-	Digest(ctx context.Context, items []store.Item) ([]llm.Section, error)
+	Digest(ctx context.Context, items []store.Item, alreadySent []string) ([]llm.Section, []int64, error)
 }
 
 // App wires sources, storage, the model and Telegram together.
@@ -50,6 +50,8 @@ const (
 	urgentWindow    = 24 * time.Hour
 	digestWindow    = 36 * time.Hour
 	digestMaxItems  = 80
+	sentWindow      = 24 * time.Hour // earlier digests the model is told about
+	maxSentTitles   = 150
 	chunkLimit      = 4000          // below telegram.MaxLen to leave headroom
 	limitRepeat     = 6 * time.Hour // reminder interval while the usage limit lasts
 	kvAlarm         = "alarm:"      // + key: when the alarm last went out
@@ -196,10 +198,27 @@ func (a *App) Digest(ctx context.Context, kind store.DigestKind) error {
 		slog.Info("digest: nothing notable")
 		return nil
 	}
-	sections, err := a.Model.Digest(ctx, items)
+	recent, err := a.Store.RecentDigestTitles(ctx, kind, now.Add(-sentWindow), maxSentTitles)
+	if err != nil {
+		return err
+	}
+	sections, skipped, err := a.Model.Digest(ctx, items, recent)
 	a.usageLimitAlarm(ctx, err)
 	if err != nil {
 		return fmt.Errorf("digest: %w", err)
+	}
+	// Items the model left out as repeats of earlier digests are marked, so
+	// they don't come back; items it just forgot stay pending.
+	given := make(map[int64]bool, len(items))
+	for _, it := range items {
+		given[it.ID] = true
+	}
+	var repeats []int64
+	for _, id := range skipped {
+		if given[id] {
+			repeats = append(repeats, id)
+			given[id] = false
+		}
 	}
 	title := "📰 <b>News digest</b>"
 	if kind == store.Hourly {
@@ -207,6 +226,10 @@ func (a *App) Digest(ctx context.Context, kind store.DigestKind) error {
 	}
 	msg, ids := a.renderDigest(title, sections, items, now)
 	if len(ids) == 0 {
+		if len(repeats) > 0 {
+			slog.Info("digest: only repeats of earlier digests, nothing sent", "repeats", len(repeats))
+			return a.Store.MarkDigestSent(ctx, kind, repeats, now)
+		}
 		return fmt.Errorf("digest: model output references none of the %d items", len(items))
 	}
 	var errs []error
@@ -226,10 +249,11 @@ func (a *App) Digest(ctx context.Context, kind store.DigestKind) error {
 	if len(rejected) > 0 {
 		ids = delivered(ids, items, sent, rejected)
 	}
-	if err := a.Store.MarkDigestSent(ctx, kind, ids, now); err != nil {
+	shown := len(ids)
+	if err := a.Store.MarkDigestSent(ctx, kind, append(ids, repeats...), now); err != nil {
 		return errors.Join(append(errs, fmt.Errorf("mark digest: %w", err))...)
 	}
-	slog.Info("digest sent", "items", len(ids), "left_out", len(items)-len(ids), "sections", len(sections))
+	slog.Info("digest sent", "items", shown, "repeats", len(repeats), "sections", len(sections))
 	return errors.Join(errs...)
 }
 
