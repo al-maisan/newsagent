@@ -74,9 +74,12 @@ sudo systemctl enable --now newsagent-poll.timer newsagent-digest.timer
 | `timezone` | `UTC` | zone for times shown in digests |
 | `max_age` | `48h` | ignore items published earlier than this |
 | `hn.top_n` | `30` | number of HN top stories to consider |
-| `x.max_posts_per_poll` | `25` | 5..100 |
+| `x.max_posts_per_poll` | `25` | 5..100, per request |
 | `x.max_posts_per_day` | `200` | hard daily cap (UTC day) on billed reads |
 | `x.min_interval` | `1h` | minimum time between X reads |
+| `x.mentions` | `false` | ping every mention of you |
+| `x.accounts` | `[]` | usernames (without `@`) whose posts always go into the digest |
+| `x.home_timeline` | `true` | read the home timeline |
 | `llm.claude_path` | `claude` | Claude Code CLI binary |
 | `llm.home_dir` | `/var/lib/newsagent` | writable HOME for the CLI |
 | `llm.model` | `claude-opus-5-5` | Claude model for scoring and digests |

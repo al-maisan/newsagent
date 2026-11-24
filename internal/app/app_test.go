@@ -158,3 +158,33 @@ func TestDigestDropsUnknownIDs(t *testing.T) {
 		t.Fatalf("model-invented entry rendered: %q", *sent)
 	}
 }
+
+func TestMentionAlwaysPinged(t *testing.T) {
+	m := &fakeModel{scores: map[string]int{"@fan: hi": 1}}
+	it := item("1", "@fan: hi")
+	it.Priority = store.PriorityPing
+	a, sent := newApp(t, m, []store.Item{it})
+	if err := a.Poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(*sent) != 1 || !strings.HasPrefix((*sent)[0], "💬") {
+		t.Fatalf("mention not pinged: %q", *sent)
+	}
+}
+
+func TestDigestKeepsFollowedAccounts(t *testing.T) {
+	m := &fakeModel{scores: map[string]int{"A": 7, "@esr: low": 2}, sections: []llm.Section{
+		{Heading: "Tech", Entries: []llm.Entry{{Text: "about A", ItemIDs: []int64{1}}}},
+	}}
+	follow := item("2", "@esr: low")
+	follow.Priority = store.PriorityDigest
+	a, sent := newApp(t, m, []store.Item{item("1", "A"), follow})
+	a.Poll(context.Background())
+	if err := a.Digest(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	msg := (*sent)[len(*sent)-1]
+	if !strings.Contains(msg, "From accounts you follow") || !strings.Contains(msg, "@esr: low") {
+		t.Fatalf("followed account dropped: %q", msg)
+	}
+}

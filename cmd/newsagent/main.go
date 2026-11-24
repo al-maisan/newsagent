@@ -93,6 +93,9 @@ func run() error {
 			MaxPerDay:      cfg.X.MaxPerDay,
 			MinInterval:    time.Duration(cfg.X.MinInterval),
 			ExcludeReplies: cfg.X.ExcludeReplies,
+			HomeTimeline:   cfg.X.HomeTimeline,
+			Mentions:       cfg.X.Mentions,
+			Accounts:       cfg.X.Accounts,
 		}
 		a.Sources = append(a.Sources, app.Source{Name: "x", Fetch: func(ctx context.Context) ([]store.Item, error) {
 			return x.Fetch(ctx, st, time.Now())

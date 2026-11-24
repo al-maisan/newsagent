@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/al-maisan/newsagent/internal/store"
@@ -22,23 +23,32 @@ type KV interface {
 	Set(ctx context.Context, key, value string) error
 }
 
-// X reads the authenticated user's home timeline (reverse chronological).
-// X bills per post read, so reads are capped per poll and per UTC day.
+// X reads, in this order: mentions of the authenticated user, new posts of
+// selected accounts, and the home timeline. X bills per post read, so reads
+// are capped per request and per UTC day; the order decides what gets the
+// budget first.
 type X struct {
 	Client         *http.Client
 	BaseURL        string
 	Auth           OAuth1
-	MaxPerPoll     int
+	MaxPerPoll     int // per request
 	MaxPerDay      int
 	MinInterval    time.Duration
 	ExcludeReplies bool
+	Mentions       bool
+	Accounts       []string // usernames whose posts always reach the digest
+	HomeTimeline   bool
 }
 
 const (
 	kvXUserID   = "x_user_id"
-	kvXSinceID  = "x_since_id"
+	kvXSinceID  = "x_since_id" // home timeline
 	kvXLastPoll = "x_last_poll"
-	kvXReads    = "x_reads:" // + YYYY-MM-DD (UTC)
+	kvXReads    = "x_reads:"     // + YYYY-MM-DD (UTC)
+	kvXSince    = "x_since:"     // + "mentions" or user id
+	kvXUID      = "x_uid:"       // + lower-case username
+	firstLook   = 24 * time.Hour // how far back the first read of a feed goes
+	notFound    = "-"            // cached id of a username X does not know
 )
 
 type xTimeline struct {
@@ -60,66 +70,119 @@ type xTimeline struct {
 		} `json:"users"`
 	} `json:"includes"`
 	Meta struct {
-		NewestID    string `json:"newest_id"`
-		ResultCount int    `json:"result_count"`
+		NewestID string `json:"newest_id"`
 	} `json:"meta"`
 }
 
-// Fetch returns new timeline posts, or nothing if it is too early or the
-// daily budget is used up.
+// budget tracks the posts read today; it is saved after every request.
+type budget struct {
+	kv        KV
+	key       string
+	used, max int
+}
+
+func (b *budget) left() int { return b.max - b.used }
+
+func (b *budget) spend(ctx context.Context, n int) error {
+	b.used += n
+	return b.kv.Set(ctx, b.key, strconv.Itoa(b.used))
+}
+
+// Fetch returns new posts, or nothing if it is too early or the daily budget
+// is used up. Failing feeds are logged and skipped; an error is returned only
+// if every feed failed.
 func (x *X) Fetch(ctx context.Context, kv KV, now time.Time) ([]store.Item, error) {
 	if last, _ := kv.Get(ctx, kvXLastPoll); last != "" {
 		if ts, err := strconv.ParseInt(last, 10, 64); err == nil && now.Sub(time.Unix(ts, 0)) < x.MinInterval {
 			return nil, nil
 		}
 	}
-	readsKey := kvXReads + now.UTC().Format("2006-01-02")
-	used := 0
-	if v, _ := kv.Get(ctx, readsKey); v != "" {
-		used, _ = strconv.Atoi(v)
+	b := &budget{kv: kv, key: kvXReads + now.UTC().Format("2006-01-02"), max: x.MaxPerDay}
+	if v, _ := kv.Get(ctx, b.key); v != "" {
+		b.used, _ = strconv.Atoi(v)
 	}
-	budget := min(x.MaxPerPoll, x.MaxPerDay-used, 100)
-	if budget < 5 { // the API's minimum max_results is 5
-		slog.Info("x daily read budget used up", "used", used, "max", x.MaxPerDay)
+	if b.left() < 5 { // the API's minimum max_results is 5
+		slog.Info("x daily read budget used up", "used", b.used, "max", x.MaxPerDay)
 		return nil, nil
 	}
-
 	uid, err := x.userID(ctx, kv)
 	if err != nil {
 		return nil, err
 	}
+
+	var items []store.Item
+	var errs []error
+	read := func(name, path, sinceKey, priority string, excludeReplies bool) {
+		got, err := x.read(ctx, kv, b, now, path, sinceKey, priority, excludeReplies)
+		if err != nil {
+			slog.Warn("x read failed", "feed", name, "err", err)
+			errs = append(errs, fmt.Errorf("x %s: %w", name, err))
+			return
+		}
+		items = append(items, got...)
+	}
+	if x.Mentions {
+		read("mentions", "/users/"+uid+"/mentions", kvXSince+"mentions", store.PriorityPing, false)
+	}
+	if len(x.Accounts) > 0 {
+		ids, err := x.accountIDs(ctx, kv)
+		if err != nil {
+			errs = append(errs, err)
+		}
+		for _, a := range x.Accounts {
+			if id := ids[strings.ToLower(a)]; id != "" {
+				read("@"+a, "/users/"+id+"/tweets", kvXSince+id, store.PriorityDigest, x.ExcludeReplies)
+			}
+		}
+	}
+	if x.HomeTimeline {
+		read("home", "/users/"+uid+"/timelines/reverse_chronological", kvXSinceID, "", x.ExcludeReplies)
+	}
+	if err := kv.Set(ctx, kvXLastPoll, strconv.FormatInt(now.Unix(), 10)); err != nil {
+		return nil, err
+	}
+	if len(items) == 0 && len(errs) > 0 {
+		return nil, errors.Join(errs...)
+	}
+	return items, nil
+}
+
+// read fetches one feed's posts newer than the stored since id. Spend and
+// progress are saved before returning, so billed posts are never read twice.
+func (x *X) read(ctx context.Context, kv KV, b *budget, now time.Time, path, sinceKey, priority string, excludeReplies bool) ([]store.Item, error) {
+	n := min(x.MaxPerPoll, b.left(), 100)
+	if n < 5 {
+		return nil, nil
+	}
 	q := url.Values{
-		"max_results": {strconv.Itoa(budget)},
+		"max_results": {strconv.Itoa(n)},
 		"post.fields": {"created_at,author_id,public_metrics"},
 		"expansions":  {"author_id"},
 		"user.fields": {"username"},
 	}
-	if x.ExcludeReplies {
+	if excludeReplies {
 		q.Set("exclude", "replies")
 	}
-	since, err := kv.Get(ctx, kvXSinceID)
+	since, err := kv.Get(ctx, sinceKey)
 	if err != nil {
 		return nil, err
 	}
 	if since != "" {
 		q.Set("since_id", since)
+	} else {
+		q.Set("start_time", now.Add(-firstLook).UTC().Format(time.RFC3339))
 	}
 	var tl xTimeline
-	if err := x.get(ctx, "/users/"+uid+"/timelines/reverse_chronological", q, &tl); err != nil {
-		return nil, fmt.Errorf("x timeline: %w", err)
+	if err := x.get(ctx, path, q, &tl); err != nil {
+		return nil, err
 	}
-	// Record spend and progress before returning items, so a later failure
-	// never causes the same (billed) posts to be read again.
-	if err := kv.Set(ctx, readsKey, strconv.Itoa(used+len(tl.Data))); err != nil {
+	if err := b.spend(ctx, len(tl.Data)); err != nil {
 		return nil, err
 	}
 	if tl.Meta.NewestID != "" {
-		if err := kv.Set(ctx, kvXSinceID, tl.Meta.NewestID); err != nil {
+		if err := kv.Set(ctx, sinceKey, tl.Meta.NewestID); err != nil {
 			return nil, err
 		}
-	}
-	if err := kv.Set(ctx, kvXLastPoll, strconv.FormatInt(now.Unix(), 10)); err != nil {
-		return nil, err
 	}
 
 	users := map[string]string{}
@@ -141,9 +204,64 @@ func (x *X) Fetch(ctx context.Context, kv KV, now time.Time) ([]store.Item, erro
 			Author:    name,
 			Text:      fmt.Sprintf("%s (likes %d, reposts %d, replies %d)", clip(text, maxTextRunes), p.PublicMetrics.Likes, p.PublicMetrics.Reposts, p.PublicMetrics.Replies),
 			Published: parseTime(p.CreatedAt),
+			Priority:  priority,
 		})
 	}
 	return out, nil
+}
+
+// accountIDs maps lower-case usernames to user ids. Ids are cached; new
+// usernames are looked up in one batched request. Usernames X does not know
+// are cached as notFound, so they cost one lookup only.
+func (x *X) accountIDs(ctx context.Context, kv KV) (map[string]string, error) {
+	ids := map[string]string{}
+	var missing []string
+	for _, a := range x.Accounts {
+		key := strings.ToLower(a)
+		id, err := kv.Get(ctx, kvXUID+key)
+		if err != nil {
+			return ids, err
+		}
+		if id == notFound {
+			continue
+		}
+		if id != "" {
+			ids[key] = id
+		} else {
+			missing = append(missing, a)
+		}
+	}
+	if len(missing) == 0 {
+		return ids, nil
+	}
+	var res struct {
+		Data []struct {
+			ID       string `json:"id"`
+			Username string `json:"username"`
+		} `json:"data"`
+	}
+	if err := x.get(ctx, "/users/by", url.Values{"usernames": {strings.Join(missing, ",")}}, &res); err != nil {
+		return ids, fmt.Errorf("x users/by: %w", err)
+	}
+	for _, u := range res.Data {
+		key := strings.ToLower(u.Username)
+		if u.ID == "" {
+			continue
+		}
+		if err := kv.Set(ctx, kvXUID+key, u.ID); err != nil {
+			return ids, err
+		}
+		ids[key] = u.ID
+	}
+	for _, a := range missing {
+		if key := strings.ToLower(a); ids[key] == "" {
+			slog.Warn("x account not found, skipping it", "username", a)
+			if err := kv.Set(ctx, kvXUID+key, notFound); err != nil {
+				return ids, err
+			}
+		}
+	}
+	return ids, nil
 }
 
 // userID returns the authenticated user's id, looked up once and cached.
