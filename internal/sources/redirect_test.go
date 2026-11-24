@@ -30,6 +30,9 @@ func TestCheckRedirect(t *testing.T) {
 		"https://169.254.169.254/latest/": false, // link-local (cloud metadata)
 		"https://127.0.0.1:8080/":         false,
 		"https://[::1]/":                  false,
+		"https://100.101.102.103/":        false, // CGNAT / Tailscale
+		"https://100.63.255.255/":         true,  // just below 100.64/10
+		"https://100.128.0.1/":            true,  // just above 100.64/10
 		"http://cdn.example/rss":          false, // https -> http
 	} {
 		if err := CheckRedirect(req(target), from); (err == nil) != ok {
