@@ -29,6 +29,7 @@ type XSearch struct {
 	BaseURL        string
 	Key            string // TWITTERAPI_IO_KEY
 	Accounts       []string
+	AlwaysDigest   []string // accounts whose posts always reach the digest
 	ExcludeReplies bool
 	MinInterval    time.Duration
 	MaxPerDay      int           // safety cap on tweets read per UTC day
@@ -192,11 +193,15 @@ func (x *XSearch) search(ctx context.Context, kv KV, b *budget, q xsQuery, now t
 	if since != "" {
 		query = q.text + " since_id:" + since
 	}
+	digest := map[string]bool{}
+	for _, a := range x.AlwaysDigest {
+		digest[strings.ToLower(a)] = true
+	}
 	newest := since
 	var out []store.Item
-	cursor := ""
-	for page := 0; page < xsMaxPages && b.left() > 0; page++ {
-		if page > 0 && !x.pause(ctx) {
+	cursor, more, pages := "", false, 0
+	for ; pages < xsMaxPages && b.left() > 0; pages++ {
+		if pages > 0 && !x.pause(ctx) {
 			return out, ctx.Err()
 		}
 		var p xsPage
@@ -215,12 +220,22 @@ func (x *XSearch) search(ctx context.Context, kv KV, b *budget, q xsQuery, now t
 			if newerID(t.ID, newest) {
 				newest = t.ID
 			}
-			out = append(out, xsItem(t.ID, t.Author.UserName, t.Text, t.CreatedAt, t.LikeCount, t.RetweetCount, t.ReplyCount))
+			it := xsItem(t.ID, t.Author.UserName, t.Text, t.CreatedAt, t.LikeCount, t.RetweetCount, t.ReplyCount)
+			if digest[strings.ToLower(t.Author.UserName)] {
+				it.Priority = store.PriorityDigest
+			}
+			out = append(out, it)
 		}
-		if !p.HasNextPage || p.NextCursor == "" {
+		more = p.HasNextPage && p.NextCursor != ""
+		if !more {
 			break
 		}
 		cursor = p.NextCursor
+	}
+	// since_id moves past what is left; Latest is newest first, so those
+	// posts can't be fetched later. Say so.
+	if more {
+		slog.Warn("xsearch: page or daily cap reached, older new posts skipped", "query", q.key, "pages", pages, "left_today", b.left())
 	}
 	if newest != since {
 		if err := kv.Set(ctx, kvXSSince+q.key, newest); err != nil {

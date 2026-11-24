@@ -116,6 +116,7 @@ func run() error {
 			BaseURL:        sources.XSearchBaseURL,
 			Key:            cfg.Secrets.TwitterAPIKey,
 			Accounts:       cfg.XSearch.Accounts,
+			AlwaysDigest:   cfg.XSearch.AlwaysDigest,
 			ExcludeReplies: cfg.XSearch.ExcludeReplies,
 			MinInterval:    time.Duration(cfg.XSearch.MinInterval),
 			MaxPerDay:      cfg.XSearch.MaxPerDay,

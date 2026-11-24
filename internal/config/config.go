@@ -83,6 +83,7 @@ type Config struct {
 	XSearch struct {
 		Enabled        bool     `json:"enabled"`
 		Accounts       []string `json:"accounts"`
+		AlwaysDigest   []string `json:"always_digest"` // subset of accounts, like x.accounts
 		ExcludeReplies bool     `json:"exclude_replies"`
 		MinInterval    Duration `json:"min_interval"`
 		MaxPerDay      int      `json:"max_posts_per_day"`
@@ -215,6 +216,15 @@ func (c *Config) validate() error {
 			check(xUsername.MatchString(a), fmt.Sprintf("xsearch.accounts: %q is not a valid username (no @)", a))
 			check(!seen[strings.ToLower(a)], fmt.Sprintf("xsearch.accounts: %q is listed twice", a))
 			seen[strings.ToLower(a)] = true
+		}
+		for _, a := range c.XSearch.AlwaysDigest {
+			check(seen[strings.ToLower(a)], fmt.Sprintf("xsearch.always_digest: %q is not in xsearch.accounts", a))
+		}
+		if c.X.Enabled {
+			for _, a := range c.X.Accounts {
+				// Read through both APIs, it would be billed twice per poll.
+				check(!seen[strings.ToLower(a)], fmt.Sprintf("%q is in both x.accounts and xsearch.accounts", a))
+			}
 		}
 		check(c.XSearch.MinInterval > 0, "xsearch.min_interval must be > 0")
 		check(c.XSearch.MaxPerDay >= 20, "xsearch.max_posts_per_day must be >= 20")

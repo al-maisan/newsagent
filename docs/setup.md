@@ -96,6 +96,7 @@ Turn it off again with `sudo systemctl disable --now newsagent-hourly.timer`.
 | `x.exclude_replies` | `false` | skip replies in the home timeline and the `x.accounts` feeds |
 | `xsearch.enabled` | `false` | read X accounts through twitterapi.io search instead of (or besides) the official API; needs `TWITTERAPI_IO_KEY` |
 | `xsearch.accounts` | — | usernames (without `@`) to read, 1..100; one search covers many accounts |
+| `xsearch.always_digest` | `[]` | subset of `xsearch.accounts` whose posts always go into the digest (like `x.accounts`); the others are scored normally. An account can't be in both `x.accounts` and `xsearch.accounts` |
 | `xsearch.exclude_replies` | `false` | skip replies |
 | `xsearch.min_interval` | `15m` | minimum time between searches |
 | `xsearch.max_posts_per_day` | `2000` | safety cap on posts read per UTC day ($0.15 per 1,000) |

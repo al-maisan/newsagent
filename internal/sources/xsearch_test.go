@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/al-maisan/newsagent/internal/store"
 )
 
 // xsServer answers advanced_search with the pages in pages (by cursor) and
@@ -174,5 +176,19 @@ func TestXSearchAlarms(t *testing.T) {
 	status = 0
 	if err := poll(); err != nil || !slices.Contains(rec.cleared, AlarmXSearchCredits) || !slices.Contains(rec.cleared, AlarmXSearchAuth) {
 		t.Fatalf("success must clear both: err=%v cleared=%v", err, rec.cleared)
+	}
+}
+
+func TestXSearchAlwaysDigest(t *testing.T) {
+	pages := map[string]string{"": `{"tweets":[` + xsTweet("3001", "Bell") + `,` + xsTweet("3002", "other") + `],"has_next_page":false,"next_cursor":""}`}
+	srv, _ := xsServer(t, pages, nil)
+	x := &XSearch{Client: srv.Client(), BaseURL: srv.URL, Key: "k", Accounts: []string{"bell", "other"}, AlwaysDigest: []string{"bell"},
+		MinInterval: time.Minute, MaxPerDay: 100}
+	items, err := x.Fetch(context.Background(), memKV{}, time.Now())
+	if err != nil || len(items) != 2 {
+		t.Fatal(items, err)
+	}
+	if items[0].Priority != store.PriorityDigest || items[1].Priority != "" {
+		t.Fatalf("priorities: %q %q", items[0].Priority, items[1].Priority)
 	}
 }
