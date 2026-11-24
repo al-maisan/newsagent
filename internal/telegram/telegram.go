@@ -7,10 +7,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
+	"unicode/utf16"
 )
 
 // BaseURL is the Telegram Bot API endpoint.
@@ -27,14 +31,31 @@ type Client struct {
 	ChatID  string
 }
 
-// Send posts one message (at most MaxLen characters).
+// Send posts one HTML message (at most MaxLen characters). If Telegram
+// rejects it, Send retries once as plain text (see PlainText) and returns
+// the original error only if that fails too.
 func (c *Client) Send(ctx context.Context, html string) error {
-	body, err := json.Marshal(map[string]any{
+	err := c.send(ctx, html, "HTML")
+	if !IsRejected(err) {
+		return err
+	}
+	if perr := c.send(ctx, PlainText(html), ""); perr != nil {
+		return err
+	}
+	slog.Warn("telegram rejected HTML, sent as plain text", "err", err)
+	return nil
+}
+
+func (c *Client) send(ctx context.Context, text, parseMode string) error {
+	msg := map[string]any{
 		"chat_id":              c.ChatID,
-		"text":                 html,
-		"parse_mode":           "HTML",
+		"text":                 text,
 		"link_preview_options": map[string]bool{"is_disabled": true},
-	})
+	}
+	if parseMode != "" {
+		msg["parse_mode"] = parseMode
+	}
+	body, err := json.Marshal(msg)
 	if err != nil {
 		return err
 	}
@@ -123,4 +144,23 @@ func Split(text string, limit int) []string {
 		out = append(out, cur.String())
 	}
 	return out
+}
+
+var (
+	anchorRe = regexp.MustCompile(`<a href="([^"]*)">(.*?)</a>`)
+	tagRe    = regexp.MustCompile(`<[^>]*>`)
+)
+
+// PlainText turns a message from this program's HTML into plain text:
+// links become "label url", other tags are dropped, entities unescaped, and
+// the result is cut to MaxLen UTF-16 units (Telegram's length unit).
+func PlainText(h string) string {
+	s := html.UnescapeString(tagRe.ReplaceAllString(anchorRe.ReplaceAllString(h, "$2 $1"), ""))
+	n := 0
+	for i, r := range s {
+		if n += utf16.RuneLen(r); n > MaxLen-1 {
+			return s[:i] + "…"
+		}
+	}
+	return s
 }
