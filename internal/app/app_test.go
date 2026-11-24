@@ -320,8 +320,46 @@ func TestDigestRejectedPartSkipped(t *testing.T) {
 	if err := a.Digest(context.Background(), store.Daily); err != nil {
 		t.Fatal(err)
 	}
-	if len(*sent) != 0 {
-		t.Fatalf("rejected digest retried: %q", *sent)
+	// The item never reached the reader, so the next digest carries it.
+	if len(*sent) != 1 || !strings.Contains((*sent)[0], "https://e.com/1") {
+		t.Fatalf("rejected item not retried: %q", *sent)
+	}
+}
+
+func TestDigestMarksOnlyDeliveredParts(t *testing.T) {
+	var entries []llm.Entry
+	var items []store.Item
+	scores := map[string]int{}
+	for i := 1; i <= 8; i++ {
+		title := fmt.Sprint("T", i)
+		scores[title] = 7
+		items = append(items, item(fmt.Sprint(i), title))
+		entries = append(entries, llm.Entry{Text: strings.Repeat("x", 590), ItemIDs: []int64{int64(i)}})
+	}
+	m := &fakeModel{scores: scores, sections: []llm.Section{{Heading: "Long", Entries: entries}}}
+	a, sent := newApp(t, m, items)
+	a.Poll(context.Background())
+	send := a.Send
+	var parts int
+	a.Send = func(ctx context.Context, s string) error {
+		parts++
+		if strings.Contains(s, `href="https://e.com/1"`) {
+			return &telegram.APIError{Code: 400, Description: "Bad Request: message is too long"}
+		}
+		return send(ctx, s)
+	}
+	if err := a.Digest(context.Background(), store.Daily); err == nil || parts < 2 {
+		t.Fatalf("want a rejected part among %d parts, err=%v", parts, err)
+	}
+	a.Send = send
+	m.sections = nil
+	*sent = nil
+	if err := a.Digest(context.Background(), store.Daily); err != nil {
+		t.Fatal(err)
+	}
+	// Only the rejected part's items come back; delivered ones don't.
+	if len(*sent) != 1 || !strings.Contains((*sent)[0], `href="https://e.com/1"`) || strings.Contains((*sent)[0], `href="https://e.com/8"`) {
+		t.Fatalf("bad retry digest: %q", *sent)
 	}
 }
 

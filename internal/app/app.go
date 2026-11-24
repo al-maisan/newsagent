@@ -196,6 +196,7 @@ func (a *App) Digest(ctx context.Context, kind store.DigestKind) error {
 		return fmt.Errorf("digest: model output references none of the %d items", len(items))
 	}
 	var errs []error
+	var sent, rejected []string
 	for i, part := range telegram.Split(msg, chunkLimit) {
 		if err := a.Send(ctx, part); err != nil {
 			if !telegram.IsRejected(err) {
@@ -203,13 +204,43 @@ func (a *App) Digest(ctx context.Context, kind store.DigestKind) error {
 			}
 			slog.Error("digest part rejected, skipped", "part", i, "bytes", len(part), "err", err)
 			errs = append(errs, fmt.Errorf("digest part %d rejected: %w", i, err))
+			rejected = append(rejected, part)
+			continue
 		}
+		sent = append(sent, part)
+	}
+	if len(rejected) > 0 {
+		ids = delivered(ids, items, sent, rejected)
 	}
 	if err := a.Store.MarkDigestSent(ctx, kind, ids, now); err != nil {
 		return errors.Join(append(errs, fmt.Errorf("mark digest: %w", err))...)
 	}
 	slog.Info("digest sent", "items", len(ids), "left_out", len(items)-len(ids), "sections", len(sections))
 	return errors.Join(errs...)
+}
+
+// delivered drops the ids whose link shows up only in rejected parts: those
+// items never reached the reader and stay pending for the next digest.
+func delivered(ids []int64, items []store.Item, sent, rejected []string) []int64 {
+	url := make(map[int64]string, len(items))
+	for _, it := range items {
+		url[it.ID] = `href="` + esc(it.URL) + `"`
+	}
+	in := func(parts []string, s string) bool {
+		for _, p := range parts {
+			if strings.Contains(p, s) {
+				return true
+			}
+		}
+		return false
+	}
+	var out []int64
+	for _, id := range ids {
+		if href := url[id]; in(sent, href) || !in(rejected, href) {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // AlarmClaudeLimit is the alarm key for the Claude plan's usage limit.
