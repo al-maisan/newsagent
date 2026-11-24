@@ -105,22 +105,34 @@ func Open(path string) (*Store, error) {
 }
 
 // migrate adds columns that databases created by older versions lack.
+// The check and the ALTERs run in one write transaction (BEGIN IMMEDIATE),
+// so units that start at the same time upgrade the database only once.
 func migrate(db *sql.DB) error {
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return err
+	}
 	for _, c := range []struct{ name, def string }{
 		{"priority", "TEXT NOT NULL DEFAULT ''"},
 		{"score_retries", "INTEGER NOT NULL DEFAULT 0"},
 	} {
 		var n int
-		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('items') WHERE name = ?`, c.name).Scan(&n); err != nil {
+		err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('items') WHERE name = ?`, c.name).Scan(&n)
+		if err == nil && n == 0 {
+			_, err = conn.ExecContext(ctx, `ALTER TABLE items ADD COLUMN `+c.name+` `+c.def)
+		}
+		if err != nil {
+			conn.ExecContext(ctx, `ROLLBACK`)
 			return err
 		}
-		if n == 0 {
-			if _, err := db.Exec(`ALTER TABLE items ADD COLUMN ` + c.name + ` ` + c.def); err != nil {
-				return err
-			}
-		}
 	}
-	return nil
+	_, err = conn.ExecContext(ctx, `COMMIT`)
+	return err
 }
 
 // Close closes the database.

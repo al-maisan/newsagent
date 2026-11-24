@@ -156,3 +156,35 @@ func TestScoreRetriesGiveUp(t *testing.T) {
 		t.Fatalf("not given up after %d retries", MaxScoreRetries)
 	}
 }
+
+func TestMigrateConcurrent(t *testing.T) {
+	for round := range 20 {
+		path := filepath.Join(t.TempDir(), "old.db")
+		db, err := sql.Open("sqlite", path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		old := strings.Replace(schema, "priority       TEXT    NOT NULL DEFAULT '',\n", "", 1)
+		old = strings.Replace(old, "score_retries  INTEGER NOT NULL DEFAULT 0,\n", "", 1)
+		// Like a real database: newsagent always ran it in WAL mode.
+		if _, err := db.Exec(`PRAGMA journal_mode=WAL;` + old); err != nil {
+			t.Fatal(err)
+		}
+		db.Close()
+		errs := make(chan error, 4)
+		for range 4 {
+			go func() {
+				s, err := Open(path)
+				if err == nil {
+					s.Close()
+				}
+				errs <- err
+			}()
+		}
+		for range 4 {
+			if err := <-errs; err != nil {
+				t.Fatalf("round %d: concurrent open: %v", round, err)
+			}
+		}
+	}
+}
