@@ -54,6 +54,7 @@ const (
 	limitRepeat     = 6 * time.Hour // reminder interval while the usage limit lasts
 	kvAlarm         = "alarm:"      // + key: when the alarm last went out
 	maxEntryRunes   = 600
+	maxClockSkew    = 24 * time.Hour // publish dates later than now+this are ignored
 )
 
 // Poll fetches all sources, scores new items and sends urgent pings.
@@ -70,6 +71,12 @@ func (a *App) Poll(ctx context.Context) error {
 		}
 		fresh := items[:0]
 		for _, it := range items {
+			// A date far in the future is wrong; treat the item as undated,
+			// so it is kept as long as undated items and not seen as new
+			// again after pruning.
+			if it.Published.After(now.Add(maxClockSkew)) {
+				it.Published = time.Time{}
+			}
 			if it.Published.IsZero() || now.Sub(it.Published) <= a.MaxAge {
 				fresh = append(fresh, it)
 			}
@@ -117,8 +124,12 @@ func (a *App) score(ctx context.Context, now time.Time) error {
 			if llm.IsTransient(err) {
 				// Counted separately, with a higher cap, so a batch that
 				// always fails "transiently" can't block newer items forever.
-				if serr := a.Store.CountScoreRetry(ctx, ids); serr != nil {
-					return errors.Join(err, serr)
+				// The plan's usage limit is not the items' fault: it pauses
+				// all calls, so those items wait (within scoreWindow) instead.
+				if !llm.IsUsageLimit(err) {
+					if serr := a.Store.CountScoreRetry(ctx, ids); serr != nil {
+						return errors.Join(err, serr)
+					}
 				}
 				return fmt.Errorf("score (will retry): %w", err)
 			}
@@ -156,9 +167,12 @@ func (a *App) sendUrgent(ctx context.Context, now time.Time) error {
 			}
 			slog.Error("urgent rejected, skipped", "id", it.ID, "source", it.Source, "err", err)
 			errs = append(errs, fmt.Errorf("urgent %d rejected: %w", it.ID, err))
-		} else {
-			slog.Info("urgent sent", "id", it.ID, "source", it.Source, "score", it.Score)
+			if err := a.Store.MarkUrgentRejected(ctx, it.ID, now); err != nil {
+				return errors.Join(append(errs, fmt.Errorf("mark urgent: %w", err))...)
+			}
+			continue
 		}
+		slog.Info("urgent sent", "id", it.ID, "source", it.Source, "score", it.Score)
 		if err := a.Store.MarkUrgentSent(ctx, it.ID, now); err != nil {
 			return errors.Join(append(errs, fmt.Errorf("mark urgent: %w", err))...)
 		}
@@ -196,6 +210,7 @@ func (a *App) Digest(ctx context.Context, kind store.DigestKind) error {
 		return fmt.Errorf("digest: model output references none of the %d items", len(items))
 	}
 	var errs []error
+	var sent, rejected []string
 	for i, part := range telegram.Split(msg, chunkLimit) {
 		if err := a.Send(ctx, part); err != nil {
 			if !telegram.IsRejected(err) {
@@ -203,13 +218,43 @@ func (a *App) Digest(ctx context.Context, kind store.DigestKind) error {
 			}
 			slog.Error("digest part rejected, skipped", "part", i, "bytes", len(part), "err", err)
 			errs = append(errs, fmt.Errorf("digest part %d rejected: %w", i, err))
+			rejected = append(rejected, part)
+			continue
 		}
+		sent = append(sent, part)
+	}
+	if len(rejected) > 0 {
+		ids = delivered(ids, items, sent, rejected)
 	}
 	if err := a.Store.MarkDigestSent(ctx, kind, ids, now); err != nil {
 		return errors.Join(append(errs, fmt.Errorf("mark digest: %w", err))...)
 	}
 	slog.Info("digest sent", "items", len(ids), "left_out", len(items)-len(ids), "sections", len(sections))
 	return errors.Join(errs...)
+}
+
+// delivered drops the ids whose link shows up only in rejected parts: those
+// items never reached the reader and stay pending for the next digest.
+func delivered(ids []int64, items []store.Item, sent, rejected []string) []int64 {
+	url := make(map[int64]string, len(items))
+	for _, it := range items {
+		url[it.ID] = `href="` + esc(it.URL) + `"`
+	}
+	in := func(parts []string, s string) bool {
+		for _, p := range parts {
+			if strings.Contains(p, s) {
+				return true
+			}
+		}
+		return false
+	}
+	var out []int64
+	for _, id := range ids {
+		if href := url[id]; in(sent, href) || !in(rejected, href) {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // AlarmClaudeLimit is the alarm key for the Claude plan's usage limit.

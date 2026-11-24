@@ -320,8 +320,46 @@ func TestDigestRejectedPartSkipped(t *testing.T) {
 	if err := a.Digest(context.Background(), store.Daily); err != nil {
 		t.Fatal(err)
 	}
-	if len(*sent) != 0 {
-		t.Fatalf("rejected digest retried: %q", *sent)
+	// The item never reached the reader, so the next digest carries it.
+	if len(*sent) != 1 || !strings.Contains((*sent)[0], "https://e.com/1") {
+		t.Fatalf("rejected item not retried: %q", *sent)
+	}
+}
+
+func TestDigestMarksOnlyDeliveredParts(t *testing.T) {
+	var entries []llm.Entry
+	var items []store.Item
+	scores := map[string]int{}
+	for i := 1; i <= 8; i++ {
+		title := fmt.Sprint("T", i)
+		scores[title] = 7
+		items = append(items, item(fmt.Sprint(i), title))
+		entries = append(entries, llm.Entry{Text: strings.Repeat("x", 590), ItemIDs: []int64{int64(i)}})
+	}
+	m := &fakeModel{scores: scores, sections: []llm.Section{{Heading: "Long", Entries: entries}}}
+	a, sent := newApp(t, m, items)
+	a.Poll(context.Background())
+	send := a.Send
+	var parts int
+	a.Send = func(ctx context.Context, s string) error {
+		parts++
+		if strings.Contains(s, `href="https://e.com/1"`) {
+			return &telegram.APIError{Code: 400, Description: "Bad Request: message is too long"}
+		}
+		return send(ctx, s)
+	}
+	if err := a.Digest(context.Background(), store.Daily); err == nil || parts < 2 {
+		t.Fatalf("want a rejected part among %d parts, err=%v", parts, err)
+	}
+	a.Send = send
+	m.sections = nil
+	*sent = nil
+	if err := a.Digest(context.Background(), store.Daily); err != nil {
+		t.Fatal(err)
+	}
+	// Only the rejected part's items come back; delivered ones don't.
+	if len(*sent) != 1 || !strings.Contains((*sent)[0], `href="https://e.com/1"`) || strings.Contains((*sent)[0], `href="https://e.com/8"`) {
+		t.Fatalf("bad retry digest: %q", *sent)
 	}
 }
 
@@ -397,5 +435,40 @@ func TestRaiseOncePerEpisode(t *testing.T) {
 	a.Raise(ctx, "k", "T", "d", 0)
 	if len(*sent) != 2 {
 		t.Fatalf("want an alarm after Clear, got %q", *sent)
+	}
+}
+
+func TestPollFutureDatedItemIsUndated(t *testing.T) {
+	future := item("1", "From the future")
+	future.Published = now.Add(30 * 24 * time.Hour)
+	soon := item("2", "Slightly ahead")
+	soon.Published = now.Add(time.Hour) // clock skew: keep the date
+	a, _ := newApp(t, &fakeModel{}, []store.Item{future, soon})
+	if err := a.Poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// Undated items survive the 30-day prune; dated ones don't.
+	if n, err := a.Store.Prune(context.Background(), now.Add(store.Retention+time.Hour)); err != nil || n != 1 {
+		t.Fatalf("want only the slightly-ahead item pruned, got %d %v", n, err)
+	}
+	if n, _ := a.Store.Insert(context.Background(), []store.Item{future}, now.Add(store.Retention+time.Hour)); n != 0 {
+		t.Fatal("future-dated item came back as new after pruning")
+	}
+}
+
+func TestUsageLimitKeepsItems(t *testing.T) {
+	limit := &llm.TransientError{Err: errors.New("claude cli: You've hit your weekly limit · resets Mon"), UsageLimit: true}
+	m := &fakeModel{scoreErr: limit, scores: map[string]int{"A": 7}}
+	a, _ := newApp(t, m, []store.Item{item("1", "A")})
+	for range store.MaxScoreRetries + 2 {
+		a.Poll(context.Background())
+	}
+	if m.scoreCall != store.MaxScoreRetries+2 {
+		t.Fatalf("usage limit must not use up retries: %d calls", m.scoreCall)
+	}
+	m.scoreErr = nil
+	a.Poll(context.Background())
+	if un, _ := a.Store.Unscored(context.Background(), now.Add(-time.Hour), 10); len(un) != 0 {
+		t.Fatalf("item not scored after the limit reset: %+v", un)
 	}
 }
