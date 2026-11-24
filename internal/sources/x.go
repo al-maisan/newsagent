@@ -74,11 +74,13 @@ const (
 	kvXUserID   = "x_user_id"
 	kvXSinceID  = "x_since_id" // home timeline
 	kvXLastPoll = "x_last_poll"
-	kvXReads    = "x_reads:"     // + YYYY-MM-DD (UTC)
-	kvXSince    = "x_since:"     // + "mentions" or user id
-	kvXUID      = "x_uid:"       // + lower-case username
-	firstLook   = 24 * time.Hour // how far back the first read of a feed goes
-	notFound    = "-"            // cached id of a username X does not know
+	kvXReads    = "x_reads:"          // + YYYY-MM-DD (UTC)
+	kvXSince    = "x_since:"          // + "mentions" or user id
+	kvXUID      = "x_uid:"            // + lower-case username
+	kvXName     = "x_name:"           // + user id -> "username unix-time-of-lookup"
+	nameMaxAge  = 30 * 24 * time.Hour // usernames are looked up again after this
+	firstLook   = 24 * time.Hour      // how far back the first read of a feed goes
+	notFound    = "-"                 // cached id of a username X does not know
 )
 
 type xTimeline struct {
@@ -93,12 +95,6 @@ type xTimeline struct {
 			Replies int `json:"reply_count"`
 		} `json:"public_metrics"`
 	} `json:"data"`
-	Includes struct {
-		Users []struct {
-			ID       string `json:"id"`
-			Username string `json:"username"`
-		} `json:"users"`
-	} `json:"includes"`
 	Meta struct {
 		NewestID string `json:"newest_id"`
 	} `json:"meta"`
@@ -164,8 +160,9 @@ func (x *X) Fetch(ctx context.Context, kv KV, now time.Time) ([]store.Item, erro
 
 	var items []store.Item
 	var errs []error
-	read := func(name, path, sinceKey, priority string, excludeReplies bool) {
-		got, err := x.read(ctx, kv, b, now, path, sinceKey, priority, excludeReplies)
+	// author: the feed's only author if known (x.accounts), else "".
+	read := func(name, path, sinceKey, priority, author string, excludeReplies bool) {
+		got, err := x.read(ctx, kv, b, now, path, sinceKey, priority, author, excludeReplies)
 		if err != nil {
 			slog.Warn("x read failed", "feed", name, "err", err)
 			errs = append(errs, fmt.Errorf("x %s: %w", name, err))
@@ -174,7 +171,7 @@ func (x *X) Fetch(ctx context.Context, kv KV, now time.Time) ([]store.Item, erro
 		items = append(items, got...)
 	}
 	if x.Mentions {
-		read("mentions", "/users/"+uid+"/mentions", kvXSince+"mentions", store.PriorityPing, false)
+		read("mentions", "/users/"+uid+"/mentions", kvXSince+"mentions", store.PriorityPing, "", false)
 	}
 	if len(x.Accounts) > 0 {
 		ids, err := x.accountIDs(ctx, kv)
@@ -183,12 +180,12 @@ func (x *X) Fetch(ctx context.Context, kv KV, now time.Time) ([]store.Item, erro
 		}
 		for _, a := range x.Accounts {
 			if id := ids[strings.ToLower(a)]; id != "" {
-				read("@"+a, "/users/"+id+"/tweets", kvXSince+id, store.PriorityDigest, x.ExcludeReplies)
+				read("@"+a, "/users/"+id+"/tweets", kvXSince+id, store.PriorityDigest, a, x.ExcludeReplies)
 			}
 		}
 	}
 	if x.HomeTimeline {
-		read("home", "/users/"+uid+"/timelines/reverse_chronological", kvXSinceID, "", x.ExcludeReplies)
+		read("home", "/users/"+uid+"/timelines/reverse_chronological", kvXSinceID, "", "", x.ExcludeReplies)
 	}
 	// Spend and since ids are saved already: dropping the items now would
 	// lose billed posts for good. At worst the next poll comes early.
@@ -203,7 +200,10 @@ func (x *X) Fetch(ctx context.Context, kv KV, now time.Time) ([]store.Item, erro
 
 // read fetches one feed's posts newer than the stored since id. Spend and
 // progress are saved before returning, so billed posts are never read twice.
-func (x *X) read(ctx context.Context, kv KV, b *budget, now time.Time, path, sinceKey, priority string, excludeReplies bool) ([]store.Item, error) {
+// Authors come from the username cache, not from expansions=author_id: X
+// bills every expanded user ($0.010 per author per UTC day), while a cached
+// name costs one lookup per author every nameMaxAge.
+func (x *X) read(ctx context.Context, kv KV, b *budget, now time.Time, path, sinceKey, priority, author string, excludeReplies bool) ([]store.Item, error) {
 	n := min(x.MaxPerPoll, b.left(), 100)
 	if n < 5 {
 		return nil, nil
@@ -211,8 +211,6 @@ func (x *X) read(ctx context.Context, kv KV, b *budget, now time.Time, path, sin
 	q := url.Values{
 		"max_results": {strconv.Itoa(n)},
 		"post.fields": {"created_at,author_id,public_metrics"},
-		"expansions":  {"author_id"},
-		"user.fields": {"username"},
 	}
 	if excludeReplies {
 		q.Set("exclude", "replies")
@@ -239,22 +237,35 @@ func (x *X) read(ctx context.Context, kv KV, b *budget, now time.Time, path, sin
 		}
 	}
 
-	users := map[string]string{}
-	for _, u := range tl.Includes.Users {
-		users[u.ID] = u.Username
+	names := map[string]string{}
+	if author == "" {
+		ids := make([]string, 0, len(tl.Data))
+		for _, p := range tl.Data {
+			ids = append(ids, p.AuthorID)
+		}
+		names = x.usernames(ctx, kv, ids, now)
 	}
 	var out []store.Item
 	for _, p := range tl.Data {
-		name := users[p.AuthorID]
-		if name == "" || p.ID == "" {
+		if p.ID == "" {
 			continue
 		}
+		name := author
+		if name == "" {
+			name = names[p.AuthorID]
+		}
+		// Billed already: keep the post even if its author's name is unknown.
 		text := plain(p.Text)
+		title, link := text, "https://x.com/i/web/status/"+url.PathEscape(p.ID)
+		if name != "" {
+			title = "@" + name + ": " + text
+			link = "https://x.com/" + url.PathEscape(name) + "/status/" + url.PathEscape(p.ID)
+		}
 		out = append(out, store.Item{
 			Source:    "x",
 			ExtID:     p.ID,
-			Title:     clip("@"+name+": "+text, 300),
-			URL:       "https://x.com/" + url.PathEscape(name) + "/status/" + url.PathEscape(p.ID),
+			Title:     clip(title, 300),
+			URL:       link,
 			Author:    name,
 			Text:      fmt.Sprintf("%s (likes %d, reposts %d, replies %d)", clip(text, maxTextRunes), p.PublicMetrics.Likes, p.PublicMetrics.Reposts, p.PublicMetrics.Replies),
 			Published: parseTime(p.CreatedAt),
@@ -316,6 +327,52 @@ func (x *X) accountIDs(ctx context.Context, kv KV) (map[string]string, error) {
 		}
 	}
 	return ids, nil
+}
+
+// usernames maps author ids to usernames. Cached names younger than
+// nameMaxAge are used as they are; the rest are looked up in one request
+// (X bills $0.010 per user returned). Lookup problems are only logged: a
+// stale or missing name must never cost a billed post.
+func (x *X) usernames(ctx context.Context, kv KV, ids []string, now time.Time) map[string]string {
+	names := map[string]string{}
+	var missing []string
+	for _, id := range ids {
+		if _, done := names[id]; done || id == "" {
+			continue
+		}
+		v, err := kv.Get(ctx, kvXName+id)
+		if err != nil {
+			slog.Warn("x: reading username cache failed", "err", err)
+		}
+		name, ts, _ := strings.Cut(v, " ")
+		names[id] = name
+		if t, err := strconv.ParseInt(ts, 10, 64); name == "" || err != nil || now.Sub(time.Unix(t, 0)) > nameMaxAge {
+			missing = append(missing, id)
+		}
+	}
+	if len(missing) == 0 {
+		return names
+	}
+	var res struct {
+		Data []struct {
+			ID       string `json:"id"`
+			Username string `json:"username"`
+		} `json:"data"`
+	}
+	if err := x.get(ctx, "/users", url.Values{"ids": {strings.Join(missing, ",")}, "user.fields": {"username"}}, &res); err != nil {
+		slog.Warn("x: username lookup failed, using cached names", "authors", len(missing), "err", err)
+		return names
+	}
+	for _, u := range res.Data {
+		if u.ID == "" || u.Username == "" {
+			continue
+		}
+		names[u.ID] = u.Username
+		if err := kv.Set(ctx, kvXName+u.ID, u.Username+" "+strconv.FormatInt(now.Unix(), 10)); err != nil {
+			slog.Warn("x: saving username failed", "err", err)
+		}
+	}
+	return names
 }
 
 // userID returns the authenticated user's id, looked up once and cached.

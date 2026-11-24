@@ -140,7 +140,9 @@ func TestXFetch(t *testing.T) {
 			fmt.Fprint(w, `{"data":{"id":"42"}}`)
 		case "/users/42/timelines/reverse_chronological":
 			fmt.Fprint(w, `{"data":[{"id":"900","text":"hello &amp; world","author_id":"7","created_at":"2026-11-23T09:00:00.000Z","public_metrics":{"like_count":3}}],
-				"includes":{"users":[{"id":"7","username":"bob"}]},"meta":{"newest_id":"900","result_count":1}}`)
+				"meta":{"newest_id":"900","result_count":1}}`)
+		case "/users":
+			fmt.Fprint(w, `{"data":[{"id":"7","username":"bob"}]}`)
 		}
 	}))
 	defer srv.Close()
@@ -162,25 +164,33 @@ func TestXFetch(t *testing.T) {
 	if kv[kvXSinceID] != "900" || kv[kvXUserID] != "42" || kv[kvXReads+"2026-11-23"] != "1" {
 		t.Fatalf("state not saved: %v", kv)
 	}
-	if !strings.Contains(calls[1], "max_results=50") || !strings.Contains(calls[1], "exclude=replies") {
+	if !strings.Contains(calls[1], "max_results=50") || !strings.Contains(calls[1], "exclude=replies") || strings.Contains(calls[1], "expansions") {
 		t.Fatalf("bad query %q", calls[1])
+	}
+	// The author's name was looked up once and cached.
+	if !strings.HasPrefix(calls[2], "/users?ids=7&") || !strings.HasPrefix(kv[kvXName+"7"], "bob ") {
+		t.Fatalf("username not looked up and cached: %q %v", calls[2], kv)
 	}
 
 	// Too early: no call.
-	if items, _ := x.Fetch(context.Background(), kv, now.Add(10*time.Minute)); items != nil || len(calls) != 2 {
+	if items, _ := x.Fetch(context.Background(), kv, now.Add(10*time.Minute)); items != nil || len(calls) != 3 {
 		t.Fatalf("polled before min interval")
 	}
 	// Later: since_id used, budget capped at the daily remainder (60-1).
 	if _, err := x.Fetch(context.Background(), kv, now.Add(31*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(calls[2], "since_id=900") || !strings.Contains(calls[2], "max_results=50") {
-		t.Fatalf("bad follow-up query %q", calls[2])
+	if !strings.Contains(calls[3], "since_id=900") || !strings.Contains(calls[3], "max_results=50") {
+		t.Fatalf("bad follow-up query %q", calls[3])
+	}
+	// Cached name: no second lookup.
+	if len(calls) != 4 {
+		t.Fatalf("username looked up again: %q", calls)
 	}
 	// Budget used up: no call.
 	kv[kvXReads+"2026-11-23"] = "58"
 	kv[kvXLastPoll] = "0"
-	if items, _ := x.Fetch(context.Background(), kv, now.Add(time.Hour)); items != nil || len(calls) != 3 {
+	if items, _ := x.Fetch(context.Background(), kv, now.Add(time.Hour)); items != nil || len(calls) != 4 {
 		t.Fatalf("polled over budget")
 	}
 }
@@ -217,6 +227,14 @@ func TestXFetchMentionsAndAccounts(t *testing.T) {
 	}
 	if len(items) != 2 || items[0].Priority != store.PriorityPing || items[1].Priority != store.PriorityDigest {
 		t.Fatalf("bad items %+v", items)
+	}
+	// The account feed's author comes from the config; the mention's author
+	// lookup fails here (500), and the billed post is kept with an id link.
+	if items[1].URL != "https://x.com/esrtweet/status/200" || items[0].URL != "https://x.com/i/web/status/100" || items[0].Author != "" {
+		t.Fatalf("bad authors %+v", items)
+	}
+	if strings.Contains(strings.Join(calls, "\n"), "ids=7") {
+		t.Fatalf("account author looked up: %q", calls)
 	}
 	if !strings.Contains(calls[1], "start_time=2026-11-23T10") {
 		t.Fatalf("first read must start 24h back: %q", calls[1])
@@ -405,5 +423,35 @@ func TestXFetchKeepsItemsWhenLastPollSaveFails(t *testing.T) {
 	}
 	if kv.memKV[kvXSinceID] != "900" {
 		t.Fatalf("since id not saved: %v", kv.memKV)
+	}
+}
+
+func TestXUsernamesCache(t *testing.T) {
+	var lookups []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		lookups = append(lookups, r.URL.Query().Get("ids"))
+		fmt.Fprint(w, `{"data":[{"id":"1","username":"new_name"},{"id":"3","username":"carol"}]}`)
+	}))
+	defer srv.Close()
+	x := &X{Client: srv.Client(), BaseURL: srv.URL}
+	now := time.Date(2026, 11, 24, 10, 0, 0, 0, time.UTC)
+	kv := memKV{
+		kvXName + "1": fmt.Sprint("old_name ", now.Add(-nameMaxAge-time.Hour).Unix()), // stale
+		kvXName + "2": fmt.Sprint("bob ", now.Add(-time.Hour).Unix()),                 // fresh
+	}
+	names := x.usernames(context.Background(), kv, []string{"1", "2", "3", "2"}, now)
+	if names["1"] != "new_name" || names["2"] != "bob" || names["3"] != "carol" {
+		t.Fatalf("names %v", names)
+	}
+	if len(lookups) != 1 || lookups[0] != "1,3" {
+		t.Fatalf("want one lookup of the stale and unknown ids, got %q", lookups)
+	}
+	if !strings.HasPrefix(kv[kvXName+"1"], "new_name ") || !strings.HasPrefix(kv[kvXName+"3"], "carol ") {
+		t.Fatalf("cache not updated: %v", kv)
+	}
+	// All fresh now: no request.
+	x.usernames(context.Background(), kv, []string{"1", "2", "3"}, now)
+	if len(lookups) != 1 {
+		t.Fatalf("fresh names looked up again: %q", lookups)
 	}
 }
