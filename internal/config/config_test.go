@@ -89,3 +89,24 @@ func TestLoadAcceptsChatIDsAndDisabledHN(t *testing.T) {
 		t.Error("enabled hn with top_n 0: want error")
 	}
 }
+
+// The example config must fail only on its placeholders, so a verbatim
+// copy can't run with a made-up chat or follow a random X account.
+func TestExampleConfigPlaceholders(t *testing.T) {
+	_, err := Load("../../deploy/config.example.json", env(xEnv))
+	if err == nil {
+		t.Fatal("example config with placeholders must not load")
+	}
+	lines := strings.Split(err.Error(), "\n")
+	if len(lines) != 2 || !strings.Contains(err.Error(), "REPLACE_WITH_CHAT_ID") || !strings.Contains(err.Error(), "REPLACE_OR_REMOVE") {
+		t.Fatalf("want exactly the two placeholder errors, got:\n%v", err)
+	}
+	b, rerr := os.ReadFile("../../deploy/config.example.json")
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	fixed := strings.NewReplacer(`"REPLACE_WITH_CHAT_ID"`, `"12345"`, `"REPLACE_OR_REMOVE"`, `"real_account"`).Replace(string(b))
+	if _, err := Load(write(t, fixed), env(xEnv)); err != nil {
+		t.Fatalf("example config with placeholders filled in must load: %v", err)
+	}
+}
