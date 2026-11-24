@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf16"
 	"unicode/utf8"
 )
@@ -95,12 +96,12 @@ func TestIsRejected(t *testing.T) {
 		err  error
 		want bool
 	}{
-		{&APIError{400, "Bad Request: can't parse entities: unclosed tag"}, true},
-		{&APIError{400, "Bad Request: message is too long"}, true},
-		{fmt.Errorf("wrapped: %w", &APIError{400, "Bad Request: message text is empty"}), true},
-		{&APIError{400, "Bad Request: chat not found"}, false},
-		{&APIError{429, "Too Many Requests: retry after 5"}, false},
-		{&APIError{403, "Forbidden: bot was blocked by the user"}, false},
+		{&APIError{Code: 400, Description: "Bad Request: can't parse entities: unclosed tag"}, true},
+		{&APIError{Code: 400, Description: "Bad Request: message is too long"}, true},
+		{fmt.Errorf("wrapped: %w", &APIError{Code: 400, Description: "Bad Request: message text is empty"}), true},
+		{&APIError{Code: 400, Description: "Bad Request: chat not found"}, false},
+		{&APIError{Code: 429, Description: "Too Many Requests: retry after 5"}, false},
+		{&APIError{Code: 403, Description: "Forbidden: bot was blocked by the user"}, false},
 		{errors.New("can't parse entities"), false},
 	}
 	for _, tc := range cases {
@@ -149,5 +150,52 @@ func TestPlainTextClipsUTF16(t *testing.T) {
 	}
 	if n > MaxLen || !strings.HasSuffix(s, "…") {
 		t.Fatalf("len %d", n)
+	}
+}
+
+func TestSendHonorsRetryAfter(t *testing.T) {
+	for _, tc := range []struct {
+		retryAfter int
+		wantOK     bool
+		wantCalls  int
+	}{
+		{1, true, 2},     // waits 1s, then succeeds
+		{3600, false, 1}, // too long to wait: fails at once
+	} {
+		calls := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if calls++; calls == 1 {
+				w.WriteHeader(429)
+				fmt.Fprintf(w, `{"ok":false,"description":"Too Many Requests","parameters":{"retry_after":%d}}`, tc.retryAfter)
+				return
+			}
+			w.Write([]byte(`{"ok":true}`))
+		}))
+		c := &Client{HTTP: srv.Client(), BaseURL: srv.URL, Token: "T", ChatID: "1"}
+		start := time.Now()
+		err := c.Send(context.Background(), "hi")
+		srv.Close()
+		if (err == nil) != tc.wantOK || calls != tc.wantCalls {
+			t.Fatalf("retry_after=%d: err=%v calls=%d", tc.retryAfter, err, calls)
+		}
+		if tc.wantOK && time.Since(start) < time.Second {
+			t.Fatalf("retry_after=%d: did not wait", tc.retryAfter)
+		}
+	}
+}
+
+func TestSendRetryAfterStopsOnContext(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(429)
+		w.Write([]byte(`{"ok":false,"description":"Too Many Requests","parameters":{"retry_after":30}}`))
+	}))
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	c := &Client{HTTP: srv.Client(), BaseURL: srv.URL, Token: "T", ChatID: "1"}
+	if err := c.Send(ctx, "hi"); err == nil || calls != 1 {
+		t.Fatalf("err=%v calls=%d", err, calls)
 	}
 }

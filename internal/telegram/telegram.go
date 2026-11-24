@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 	"unicode/utf16"
 	"unicode/utf8"
 )
@@ -51,7 +52,33 @@ func (c *Client) Send(ctx context.Context, html string) error {
 	return nil
 }
 
+// maxRetryAfter is the longest rate-limit wait Send sits out; a longer one
+// fails, and the caller retries on its next run.
+const maxRetryAfter = 60 * time.Second
+
+// send posts once and, if Telegram rate-limits it (429 with retry_after),
+// waits as asked and posts once more.
 func (c *Client) send(ctx context.Context, text, parseMode string) error {
+	err := c.post(ctx, text, parseMode)
+	var e *APIError
+	if !errors.As(err, &e) || e.Code != http.StatusTooManyRequests || e.RetryAfter <= 0 {
+		return err
+	}
+	wait := time.Duration(e.RetryAfter) * time.Second
+	if wait > maxRetryAfter {
+		return err
+	}
+	t := time.NewTimer(wait)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return err
+	case <-t.C:
+	}
+	return c.post(ctx, text, parseMode)
+}
+
+func (c *Client) post(ctx context.Context, text, parseMode string) error {
 	msg := map[string]any{
 		"chat_id":              c.ChatID,
 		"text":                 text,
@@ -82,13 +109,16 @@ func (c *Client) send(ctx context.Context, text, parseMode string) error {
 	var r struct {
 		OK          bool   `json:"ok"`
 		Description string `json:"description"`
+		Parameters  struct {
+			RetryAfter int `json:"retry_after"`
+		} `json:"parameters"`
 	}
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err := json.Unmarshal(raw, &r); err != nil {
 		return fmt.Errorf("telegram: http %d: bad response", resp.StatusCode)
 	}
 	if !r.OK {
-		return &APIError{Code: resp.StatusCode, Description: r.Description}
+		return &APIError{Code: resp.StatusCode, Description: r.Description, RetryAfter: r.Parameters.RetryAfter}
 	}
 	return nil
 }
@@ -97,6 +127,7 @@ func (c *Client) send(ctx context.Context, text, parseMode string) error {
 type APIError struct {
 	Code        int
 	Description string
+	RetryAfter  int // seconds, set on 429
 }
 
 func (e *APIError) Error() string {
