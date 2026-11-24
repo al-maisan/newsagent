@@ -127,3 +127,37 @@ func TestPrivateHosts(t *testing.T) {
 		t.Fatalf("PrivateHosts = %q; a public feed host must never be exempt", got)
 	}
 }
+
+func TestLoadXSearch(t *testing.T) {
+	cfg := `{"xsearch":{"enabled":true,"accounts":["alice","Bob_2"]},"llm":{"interests":"x"},"telegram":{"chat_id":"1"}}`
+	if _, err := Load(write(t, cfg), env(baseEnv)); err == nil || !strings.Contains(err.Error(), "TWITTERAPI_IO_KEY") {
+		t.Fatalf("missing key: got %v", err)
+	}
+	e := map[string]string{"TWITTERAPI_IO_KEY": "k"}
+	for k, v := range xEnv { // incl. X secrets, so "in both sources" fails only on the overlap
+		e[k] = v
+	}
+	c, err := Load(write(t, cfg), env(e))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok := `{"xsearch":{"enabled":true,"accounts":["alice","bob"],"always_digest":["Bob"]},"llm":{"interests":"x"},"telegram":{"chat_id":"1"}}`
+	if _, err := Load(write(t, ok), env(e)); err != nil {
+		t.Fatalf("always_digest subset: %v", err)
+	}
+	if c.Secrets.TwitterAPIKey != "k" || time.Duration(c.XSearch.MinInterval) != 15*time.Minute || c.XSearch.MaxPerDay != 2000 || !c.XSearch.IncludeReposts {
+		t.Fatalf("defaults: %+v", c.XSearch)
+	}
+	for name, bad := range map[string]string{
+		"no accounts":       `{"xsearch":{"enabled":true},"llm":{"interests":"x"},"telegram":{"chat_id":"1"}}`,
+		"bad account":       `{"xsearch":{"enabled":true,"accounts":["@alice"]},"llm":{"interests":"x"},"telegram":{"chat_id":"1"}}`,
+		"duplicate":         `{"xsearch":{"enabled":true,"accounts":["a","A"]},"llm":{"interests":"x"},"telegram":{"chat_id":"1"}}`,
+		"low cap":           `{"xsearch":{"enabled":true,"accounts":["a"],"max_posts_per_day":5},"llm":{"interests":"x"},"telegram":{"chat_id":"1"}}`,
+		"digest not listed": `{"xsearch":{"enabled":true,"accounts":["a"],"always_digest":["b"]},"llm":{"interests":"x"},"telegram":{"chat_id":"1"}}`,
+		"in both sources":   `{"x":{"enabled":true,"accounts":["Alice"]},"xsearch":{"enabled":true,"accounts":["alice"]},"llm":{"interests":"x"},"telegram":{"chat_id":"1"}}`,
+	} {
+		if _, err := Load(write(t, bad), env(e)); err == nil {
+			t.Errorf("%s: want error", name)
+		}
+	}
+}

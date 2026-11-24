@@ -9,6 +9,7 @@ Target: an Ubuntu/Debian host with systemd (e.g. `shb`). All commands are one-li
 | `CLAUDE_CODE_OAUTH_TOKEN` | run `claude setup-token` on a machine with a browser (needs a Pro/Max plan). The token is valid for one year. |
 | `TELEGRAM_BOT_TOKEN` | Telegram: talk to @BotFather → `/newbot` |
 | `X_CONSUMER_KEY`, `X_CONSUMER_SECRET`, `X_ACCESS_TOKEN`, `X_ACCESS_TOKEN_SECRET` | developer.x.com → your app → "Keys and tokens". The app needs Read permission. Generate the access token for your own account. Buy API credits (pay-per-use). |
+| `TWITTERAPI_IO_KEY` | only for `xsearch`: sign in at twitterapi.io (Google), the key is on the dashboard. New accounts get up to $1 of trial credits; top up there. |
 
 Telegram chat id: send any message to your new bot, then run:
 
@@ -93,6 +94,13 @@ Turn it off again with `sudo systemctl disable --now newsagent-hourly.timer`.
 | `x.accounts` | `[]` | usernames (without `@`) whose posts always go into the digest |
 | `x.home_timeline` | `true` | read the home timeline |
 | `x.exclude_replies` | `false` | skip replies in the home timeline and the `x.accounts` feeds |
+| `xsearch.enabled` | `false` | read X accounts through twitterapi.io search instead of (or besides) the official API; needs `TWITTERAPI_IO_KEY` |
+| `xsearch.accounts` | — | usernames (without `@`) to read, 1..100; one search covers many accounts |
+| `xsearch.always_digest` | `[]` | subset of `xsearch.accounts` whose posts always go into the digest (like `x.accounts`); the others are scored normally. An account can't be in both `x.accounts` and `xsearch.accounts` |
+| `xsearch.exclude_replies` | `false` | skip replies |
+| `xsearch.include_reposts` | `true` | include plain reposts (like bell notifications): shown as "@account reposted @author: …", linked to the original post |
+| `xsearch.min_interval` | `15m` | minimum time between searches |
+| `xsearch.max_posts_per_day` | `2000` | safety cap on posts read per UTC day ($0.15 per 1,000) |
 | `llm.claude_path` | `claude` | Claude Code CLI binary |
 | `llm.home_dir` | `/var/lib/newsagent` | writable HOME for the CLI |
 | `llm.model` | `claude-opus-5-5` | Claude model for scoring and digests |
@@ -102,4 +110,4 @@ Turn it off again with `sudo systemctl disable --now newsagent-hourly.timer`.
 | `thresholds.max_urgent_per_poll` | `3` | cap on pings per poll |
 | `telegram.chat_id` | — (required) | chat to send to: a number (negative for groups) or `@channelname` |
 
-The digest schedules live in `newsagent-digest.timer` and `newsagent-hourly.timer` (`OnCalendar=`).
+The digest schedules live in `newsagent-digest.timer` and `newsagent-hourly.timer` (`OnCalendar=`). The poll timer runs at :07/:22/:37/:52, off the full and half hour, when twitterapi.io searches are most likely to fail.

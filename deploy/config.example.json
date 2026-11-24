@@ -44,6 +44,16 @@
     ],
     "home_timeline": true
   },
+  "xsearch": {
+    "enabled": false,
+    "accounts": [
+      "REPLACE_OR_REMOVE"
+    ],
+    "exclude_replies": true,
+    "include_reposts": true,
+    "min_interval": "15m",
+    "max_posts_per_day": 2000
+  },
   "llm": {
     "claude_path": "claude",
     "home_dir": "/var/lib/newsagent",

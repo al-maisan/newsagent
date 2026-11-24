@@ -110,6 +110,25 @@ func run() error {
 		}})
 	}
 
+	if cfg.XSearch.Enabled {
+		xs := &sources.XSearch{
+			Client:         hc,
+			BaseURL:        sources.XSearchBaseURL,
+			Key:            cfg.Secrets.TwitterAPIKey,
+			Accounts:       cfg.XSearch.Accounts,
+			AlwaysDigest:   cfg.XSearch.AlwaysDigest,
+			ExcludeReplies: cfg.XSearch.ExcludeReplies,
+			IncludeReposts: cfg.XSearch.IncludeReposts,
+			MinInterval:    time.Duration(cfg.XSearch.MinInterval),
+			MaxPerDay:      cfg.XSearch.MaxPerDay,
+			Pause:          6 * time.Second, // free tier: 1 request per 5 s
+			Alarms:         a,
+		}
+		a.Sources = append(a.Sources, app.Source{Name: "xsearch", Fetch: func(ctx context.Context) ([]store.Item, error) {
+			return xs.Fetch(ctx, st, time.Now())
+		}})
+	}
+
 	switch cmd {
 	case "poll":
 		return a.Poll(ctx)

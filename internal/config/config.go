@@ -78,6 +78,17 @@ type Config struct {
 		Mentions       bool     `json:"mentions"`
 		Accounts       []string `json:"accounts"`
 	} `json:"x"`
+	// XSearch reads X accounts through twitterapi.io (unofficial, billed per
+	// tweet returned) instead of the official X API.
+	XSearch struct {
+		Enabled        bool     `json:"enabled"`
+		Accounts       []string `json:"accounts"`
+		AlwaysDigest   []string `json:"always_digest"` // subset of accounts, like x.accounts
+		ExcludeReplies bool     `json:"exclude_replies"`
+		IncludeReposts bool     `json:"include_reposts"`
+		MinInterval    Duration `json:"min_interval"`
+		MaxPerDay      int      `json:"max_posts_per_day"`
+	} `json:"xsearch"`
 	LLM struct {
 		ClaudePath   string `json:"claude_path"`
 		HomeDir      string `json:"home_dir"`
@@ -106,6 +117,7 @@ type Secrets struct {
 	XConsumerSecret  string
 	XAccessToken     string
 	XAccessSecret    string
+	TwitterAPIKey    string // twitterapi.io, for xsearch
 }
 
 var xUsername = regexp.MustCompile(`^[A-Za-z0-9_]{1,15}$`)
@@ -131,6 +143,9 @@ func Load(path string, getenv func(string) string) (*Config, error) {
 	c.X.MaxPerDay = 200
 	c.X.MinInterval = Duration(time.Hour)
 	c.X.HomeTimeline = true
+	c.XSearch.MinInterval = Duration(15 * time.Minute)
+	c.XSearch.MaxPerDay = 2000
+	c.XSearch.IncludeReposts = true
 	c.LLM.ClaudePath = "claude"
 	c.LLM.HomeDir = "/var/lib/newsagent"
 	c.LLM.Model = "claude-opus-5-5"
@@ -152,6 +167,7 @@ func Load(path string, getenv func(string) string) (*Config, error) {
 		XConsumerSecret:  getenv("X_CONSUMER_SECRET"),
 		XAccessToken:     getenv("X_ACCESS_TOKEN"),
 		XAccessSecret:    getenv("X_ACCESS_TOKEN_SECRET"),
+		TwitterAPIKey:    getenv("TWITTERAPI_IO_KEY"),
 	}
 	return c, c.validate()
 }
@@ -193,6 +209,27 @@ func (c *Config) validate() error {
 		s := c.Secrets
 		check(s.XConsumerKey != "" && s.XConsumerSecret != "" && s.XAccessToken != "" && s.XAccessSecret != "",
 			"x is enabled but X_CONSUMER_KEY, X_CONSUMER_SECRET, X_ACCESS_TOKEN or X_ACCESS_TOKEN_SECRET is missing")
+	}
+	if c.XSearch.Enabled {
+		check(c.Secrets.TwitterAPIKey != "", "xsearch is enabled but TWITTERAPI_IO_KEY is missing")
+		check(len(c.XSearch.Accounts) >= 1 && len(c.XSearch.Accounts) <= 100, "xsearch.accounts: 1..100 usernames")
+		seen := map[string]bool{}
+		for _, a := range c.XSearch.Accounts {
+			check(xUsername.MatchString(a), fmt.Sprintf("xsearch.accounts: %q is not a valid username (no @)", a))
+			check(!seen[strings.ToLower(a)], fmt.Sprintf("xsearch.accounts: %q is listed twice", a))
+			seen[strings.ToLower(a)] = true
+		}
+		for _, a := range c.XSearch.AlwaysDigest {
+			check(seen[strings.ToLower(a)], fmt.Sprintf("xsearch.always_digest: %q is not in xsearch.accounts", a))
+		}
+		if c.X.Enabled {
+			for _, a := range c.X.Accounts {
+				// Read through both APIs, it would be billed twice per poll.
+				check(!seen[strings.ToLower(a)], fmt.Sprintf("%q is in both x.accounts and xsearch.accounts", a))
+			}
+		}
+		check(c.XSearch.MinInterval > 0, "xsearch.min_interval must be > 0")
+		check(c.XSearch.MaxPerDay >= 20, "xsearch.max_posts_per_day must be >= 20")
 	}
 	check(c.LLM.Model != "" && c.LLM.ClaudePath != "", "llm.model or llm.claude_path is empty")
 	check(strings.HasPrefix(c.LLM.HomeDir, "/"), "llm.home_dir must be an absolute path")
