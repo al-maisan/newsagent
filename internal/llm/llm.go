@@ -74,6 +74,7 @@ var scoreSchema = json.RawMessage(`{
 var digestSchema = json.RawMessage(`{
   "type": "object",
   "properties": {
+    "skipped_ids": {"type": "array", "items": {"type": "integer"}},
     "sections": {
       "type": "array",
       "items": {
@@ -98,7 +99,7 @@ var digestSchema = json.RawMessage(`{
       }
     }
   },
-  "required": ["sections"],
+  "required": ["sections", "skipped_ids"],
   "additionalProperties": false
 }`)
 
@@ -161,8 +162,10 @@ Set duplicate=true if the item covers the same story as one in "already_reported
 	return scores, nil
 }
 
-// Digest groups items into themed sections.
-func (c *Claude) Digest(ctx context.Context, items []store.Item) ([]Section, error) {
+// Digest groups items into themed sections. alreadySent are titles of items
+// the reader got in earlier digests; items that only repeat those stories are
+// left out and returned as skipped ids.
+func (c *Claude) Digest(ctx context.Context, items []store.Item, alreadySent []string) ([]Section, []int64, error) {
 	system := `You write a short news digest for one reader, to be read on a phone.
 
 Reader's interests:
@@ -170,6 +173,7 @@ Reader's interests:
 
 Group the items into 2-6 themed sections, most important first. Merge items about the same story into one entry listing all their ids.
 Items with "must_include": true come from accounts the reader follows closely: include every one of them, even if minor.
+"already_sent" lists titles the reader already got in earlier digests. Leave out any other item that only repeats one of those stories; keep it only if it adds important new information, and then say what is new. Put the ids of the items you leave out as repeats in "skipped_ids".
 Each entry: one or two plain sentences (max 40 words), no markdown, no URLs. Headings: 1-4 words.
 ` + untrusted
 
@@ -187,11 +191,15 @@ Each entry: one or two plain sentences (max 40 words), no markdown, no URLs. Hea
 	}
 	var out struct {
 		Sections []Section `json:"sections"`
+		Skipped  []int64   `json:"skipped_ids"`
 	}
-	if err := c.call(ctx, system, map[string]any{"items": payload}, digestSchema, c.DigestEffort, &out); err != nil {
-		return nil, err
+	if alreadySent == nil {
+		alreadySent = []string{}
 	}
-	return out.Sections, nil
+	if err := c.call(ctx, system, map[string]any{"already_sent": alreadySent, "items": payload}, digestSchema, c.DigestEffort, &out); err != nil {
+		return nil, nil, err
+	}
+	return out.Sections, out.Skipped, nil
 }
 
 // TransientError marks failures worth retrying later without counting them

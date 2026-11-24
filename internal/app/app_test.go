@@ -15,12 +15,14 @@ import (
 )
 
 type fakeModel struct {
-	scores    map[string]int  // title -> score
-	skip      map[string]bool // titles Score leaves out
-	scoreErr  error
-	sections  []llm.Section
-	scoreCall int
-	reported  [][]string // alreadyReported per Score call
+	scores     map[string]int  // title -> score
+	skip       map[string]bool // titles Score leaves out
+	scoreErr   error
+	sections   []llm.Section
+	scoreCall  int
+	reported   [][]string // alreadyReported per Score call
+	skipped    []int64    // Digest's skipped_ids
+	sentTitles [][]string // alreadySent per Digest call
 }
 
 func (f *fakeModel) Score(_ context.Context, items []store.Item, reported []string) ([]store.Score, error) {
@@ -38,15 +40,16 @@ func (f *fakeModel) Score(_ context.Context, items []store.Item, reported []stri
 	return out, nil
 }
 
-func (f *fakeModel) Digest(_ context.Context, items []store.Item) ([]llm.Section, error) {
+func (f *fakeModel) Digest(_ context.Context, items []store.Item, sent []string) ([]llm.Section, []int64, error) {
+	f.sentTitles = append(f.sentTitles, sent)
 	if f.sections != nil {
-		return f.sections, nil
+		return f.sections, f.skipped, nil
 	}
 	var ids []int64
 	for _, it := range items {
 		ids = append(ids, it.ID)
 	}
-	return []llm.Section{{Heading: "Tech", Entries: []llm.Entry{{Text: "Things <happened>", ItemIDs: append(ids, 9999)}}}}, nil
+	return []llm.Section{{Heading: "Tech", Entries: []llm.Entry{{Text: "Things <happened>", ItemIDs: append(ids, 9999)}}}}, f.skipped, nil
 }
 
 var now = time.Date(2026, 11, 23, 10, 0, 0, 0, time.UTC)
@@ -470,5 +473,35 @@ func TestUsageLimitKeepsItems(t *testing.T) {
 	a.Poll(context.Background())
 	if un, _ := a.Store.Unscored(context.Background(), now.Add(-time.Hour), 10); len(un) != 0 {
 		t.Fatalf("item not scored after the limit reset: %+v", un)
+	}
+}
+
+func TestDigestSkipsRepeats(t *testing.T) {
+	m := &fakeModel{scores: map[string]int{"A": 7, "B": 7}}
+	a, sent := newApp(t, m, []store.Item{item("1", "A")})
+	a.Poll(context.Background())
+	if err := a.Digest(context.Background(), store.Daily); err != nil {
+		t.Fatal(err)
+	}
+	// A new item about the same story: the hourly model is told what went
+	// out and skips it as a repeat.
+	a.Store.Insert(context.Background(), []store.Item{item("2", "B")}, now)
+	a.Poll(context.Background())
+	m.sections = []llm.Section{{Heading: "X", Entries: []llm.Entry{{Text: "nothing", ItemIDs: []int64{12345}}}}}
+	m.skipped = []int64{2, 777} // 777: not an item it was given, ignored
+	if err := a.Digest(context.Background(), store.Hourly); err != nil {
+		t.Fatalf("only repeats must not be an error: %v", err)
+	}
+	if len(*sent) != 1 {
+		t.Fatalf("a digest of only repeats must send nothing: %q", *sent)
+	}
+	if got := m.sentTitles[1]; len(got) != 1 || got[0] != "A" {
+		t.Fatalf("hourly model not told what went out: %q", got)
+	}
+	// The repeat is marked: it doesn't come back in the next hourly update.
+	m.sections, m.skipped = nil, nil
+	a.Digest(context.Background(), store.Hourly)
+	if len(*sent) != 1 {
+		t.Fatalf("skipped repeat came back: %q", *sent)
 	}
 }

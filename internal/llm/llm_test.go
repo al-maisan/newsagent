@@ -79,10 +79,24 @@ func TestScoreValidates(t *testing.T) {
 }
 
 func TestDigest(t *testing.T) {
-	c, _ := fakeCLI(t, success(`{"sections":[{"heading":"AI","entries":[{"text":"t","item_ids":[1]}]}]}`), 0)
-	s, err := c.Digest(context.Background(), []store.Item{{ID: 1}})
-	if err != nil || len(s) != 1 || s[0].Entries[0].ItemIDs[0] != 1 {
-		t.Fatalf("got %+v %v", s, err)
+	c, dir := fakeCLI(t, success(`{"sections":[{"heading":"AI","entries":[{"text":"t","item_ids":[1]}]}],"skipped_ids":[2]}`), 0)
+	s, skipped, err := c.Digest(context.Background(), []store.Item{{ID: 1}, {ID: 2}}, []string{"old story"})
+	if err != nil || len(s) != 1 || s[0].Entries[0].ItemIDs[0] != 1 || len(skipped) != 1 || skipped[0] != 2 {
+		t.Fatalf("got %+v %v %v", s, skipped, err)
+	}
+	var in struct {
+		AlreadySent []string `json:"already_sent"`
+	}
+	if err := json.Unmarshal([]byte(read(t, filepath.Join(dir, "stdin"))), &in); err != nil || len(in.AlreadySent) != 1 || in.AlreadySent[0] != "old story" {
+		t.Fatalf("already_sent not passed: %v %+v", err, in)
+	}
+	if args := read(t, filepath.Join(dir, "args")); !strings.Contains(args, `"skipped_ids"`) {
+		t.Fatal("schema lacks skipped_ids")
+	}
+	// No earlier digests: an empty list, never null.
+	c.Digest(context.Background(), []store.Item{{ID: 1}}, nil)
+	if !strings.Contains(read(t, filepath.Join(dir, "stdin")), `"already_sent":[]`) {
+		t.Fatal("nil already_sent must be sent as []")
 	}
 }
 
@@ -102,7 +116,7 @@ func TestCallErrors(t *testing.T) {
 	}
 	for _, tc := range cases {
 		c, _ := fakeCLI(t, tc.out, tc.code)
-		_, err := c.Digest(context.Background(), []store.Item{{ID: 1}})
+		_, _, err := c.Digest(context.Background(), []store.Item{{ID: 1}}, nil)
 		if err == nil {
 			t.Errorf("%s: want error", tc.name)
 			continue
@@ -127,7 +141,7 @@ func TestCallTimeout(t *testing.T) {
 	}
 	c := &Claude{Path: bin, HomeDir: dir, Model: "m", DigestEffort: "low", Timeout: 200 * time.Millisecond}
 	start := time.Now()
-	_, err := c.Digest(context.Background(), []store.Item{{ID: 1}})
+	_, _, err := c.Digest(context.Background(), []store.Item{{ID: 1}}, nil)
 	if err == nil || !IsTransient(err) || !strings.Contains(err.Error(), "no answer within") {
 		t.Fatalf("want transient timeout error, got %v", err)
 	}
@@ -138,16 +152,16 @@ func TestCallTimeout(t *testing.T) {
 
 func TestUsageLimit(t *testing.T) {
 	c, _ := fakeCLI(t, `{"type":"result","subtype":"success","is_error":true,"result":"You've hit your 5-hour limit · resets 7:30am (UTC)"}`, 1)
-	_, err := c.Digest(context.Background(), []store.Item{{ID: 1}})
+	_, _, err := c.Digest(context.Background(), []store.Item{{ID: 1}}, nil)
 	if !IsUsageLimit(err) || !IsTransient(err) || !strings.Contains(err.Error(), "resets 7:30am (UTC)") {
 		t.Fatalf("want usage-limit error with the CLI message, got %v", err)
 	}
 	c, _ = fakeCLI(t, `{"subtype":"success","is_error":true,"result":"API Error: 429 {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"Number of request tokens has exceeded your per-minute rate limit\"}}","api_error_status":429}`, 1)
-	if _, err := c.Digest(context.Background(), []store.Item{{ID: 1}}); IsUsageLimit(err) || !IsTransient(err) {
+	if _, _, err := c.Digest(context.Background(), []store.Item{{ID: 1}}, nil); IsUsageLimit(err) || !IsTransient(err) {
 		t.Fatalf("a per-minute rate limit is transient but not the plan's usage limit: %v", err)
 	}
 	c, _ = fakeCLI(t, `{"subtype":"success","is_error":true,"result":"overloaded","api_error_status":529}`, 1)
-	if _, err := c.Digest(context.Background(), []store.Item{{ID: 1}}); IsUsageLimit(err) || !IsTransient(err) {
+	if _, _, err := c.Digest(context.Background(), []store.Item{{ID: 1}}, nil); IsUsageLimit(err) || !IsTransient(err) {
 		t.Fatalf("overload is transient but not a usage limit: %v", err)
 	}
 }

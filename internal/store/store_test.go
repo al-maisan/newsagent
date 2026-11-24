@@ -348,3 +348,33 @@ func TestPendingDigestCapsDigestItems(t *testing.T) {
 		t.Fatalf("total limit: got %d", len(got))
 	}
 }
+
+func TestRecentDigestTitles(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	now := time.Date(2026, 11, 24, 15, 0, 0, 0, time.UTC)
+	s.Insert(ctx, []Item{
+		{Source: "a", ExtID: "1", Title: "daily", URL: "https://e/1"},
+		{Source: "a", ExtID: "2", Title: "hourly", URL: "https://e/2"},
+		{Source: "a", ExtID: "3", Title: "old", URL: "https://e/3"},
+		{Source: "a", ExtID: "4", Title: "pending", URL: "https://e/4"},
+	}, now)
+	un, _ := s.Unscored(ctx, now.Add(-time.Hour), 10)
+	s.MarkDigestSent(ctx, Daily, []int64{un[0].ID}, now)
+	s.MarkDigestSent(ctx, Hourly, []int64{un[1].ID}, now.Add(time.Hour))
+	s.MarkDigestSent(ctx, Daily, []int64{un[2].ID}, now.Add(-48*time.Hour))
+	since := now.Add(-24 * time.Hour)
+	if got, _ := s.RecentDigestTitles(ctx, Daily, since, 10); len(got) != 1 || got[0] != "daily" {
+		t.Fatalf("daily: %q (recaps hourly items, so they don't count)", got)
+	}
+	if got, _ := s.RecentDigestTitles(ctx, Hourly, since, 10); len(got) != 2 || got[0] != "hourly" || got[1] != "daily" {
+		t.Fatalf("hourly: %q (newest first, both kinds)", got)
+	}
+	if got, _ := s.RecentDigestTitles(ctx, Hourly, since, 1); len(got) != 1 {
+		t.Fatalf("limit: %q", got)
+	}
+}
