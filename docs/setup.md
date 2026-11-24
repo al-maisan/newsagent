@@ -79,20 +79,27 @@ Turn it off again with `sudo systemctl disable --now newsagent-hourly.timer`.
 
 | Key | Default | Meaning |
 |---|---|---|
+| `db_path` | `/var/lib/newsagent/newsagent.db` | SQLite database file |
 | `timezone` | `UTC` | zone for times shown in digests |
 | `max_age` | `48h` | ignore items published earlier than this; must be under 30 days (the retention) |
-| `hn.top_n` | `30` | number of HN top stories to consider |
+| `feeds` | `[]` | RSS/Atom feeds: `{"name": …, "url": …}`; names unique and not `hn` or `x`, URLs `http(s)://` |
+| `hn.enabled` | `false` | read Hacker News top stories |
+| `hn.top_n` | `30` | number of HN top stories to consider (1..500) |
+| `x.enabled` | `false` | read X (needs the four `X_*` secrets) |
 | `x.max_posts_per_poll` | `25` | 5..100, per request |
 | `x.max_posts_per_day` | `200` | hard daily cap (UTC day) on billed reads |
 | `x.min_interval` | `1h` | minimum time between X reads |
 | `x.mentions` | `false` | ping every mention of you |
 | `x.accounts` | `[]` | usernames (without `@`) whose posts always go into the digest |
 | `x.home_timeline` | `true` | read the home timeline |
+| `x.exclude_replies` | `false` | skip replies in the home timeline and the `x.accounts` feeds |
 | `llm.claude_path` | `claude` | Claude Code CLI binary |
 | `llm.home_dir` | `/var/lib/newsagent` | writable HOME for the CLI |
 | `llm.model` | `claude-opus-5-5` | Claude model for scoring and digests |
 | `llm.score_effort` / `llm.digest_effort` | `low` / `medium` | Claude effort levels |
+| `llm.interests` | — (required) | what you care about; Claude scores every item against it |
 | `thresholds.urgent` / `thresholds.digest` | `9` / `6` | minimum score for a ping / a digest line |
 | `thresholds.max_urgent_per_poll` | `3` | cap on pings per poll |
+| `telegram.chat_id` | — (required) | chat to send to: a number (negative for groups) or `@channelname` |
 
 The digest schedules live in `newsagent-digest.timer` and `newsagent-hourly.timer` (`OnCalendar=`).
