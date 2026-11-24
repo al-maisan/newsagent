@@ -1,14 +1,17 @@
 package sources
 
 import (
+	"bytes"
 	"context"
 	"encoding/xml"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/al-maisan/newsagent/internal/store"
+	"golang.org/x/text/encoding/htmlindex"
 )
 
 // Feed fetches an RSS 2.0 or Atom feed.
@@ -63,14 +66,14 @@ func (f *Feed) Fetch(ctx context.Context) ([]store.Item, error) {
 // ParseFeed parses RSS 2.0 or Atom XML into items tagged with source.
 func ParseFeed(source string, body []byte) ([]store.Item, error) {
 	var root struct{ XMLName xml.Name }
-	if err := xml.Unmarshal(body, &root); err != nil {
+	if err := decodeXML(body, &root); err != nil {
 		return nil, fmt.Errorf("parse xml: %w", err)
 	}
 	var out []store.Item
 	switch root.XMLName.Local {
 	case "rss":
 		var d rssDoc
-		if err := xml.Unmarshal(body, &d); err != nil {
+		if err := decodeXML(body, &d); err != nil {
 			return nil, fmt.Errorf("parse rss: %w", err)
 		}
 		for _, it := range d.Items {
@@ -83,7 +86,7 @@ func ParseFeed(source string, body []byte) ([]store.Item, error) {
 		}
 	case "feed":
 		var d atomDoc
-		if err := xml.Unmarshal(body, &d); err != nil {
+		if err := decodeXML(body, &d); err != nil {
 			return nil, fmt.Errorf("parse atom: %w", err)
 		}
 		for _, e := range d.Entries {
@@ -101,6 +104,22 @@ func ParseFeed(source string, body []byte) ([]store.Item, error) {
 		return nil, fmt.Errorf("unknown feed type %q", root.XMLName.Local)
 	}
 	return out, nil
+}
+
+// decodeXML decodes leniently: real-world feeds use HTML entities such as
+// &rsquo; and non-UTF-8 encodings such as ISO-8859-1.
+func decodeXML(body []byte, v any) error {
+	d := xml.NewDecoder(bytes.NewReader(body))
+	d.Strict = false
+	d.Entity = xml.HTMLEntity
+	d.CharsetReader = func(label string, r io.Reader) (io.Reader, error) {
+		e, err := htmlindex.Get(label)
+		if err != nil {
+			return nil, fmt.Errorf("charset %q: %w", label, err)
+		}
+		return e.NewDecoder().Reader(r), nil
+	}
+	return d.Decode(v)
 }
 
 func appendItem(out []store.Item, source, id, title, link, comments, author, text string, pub time.Time) []store.Item {

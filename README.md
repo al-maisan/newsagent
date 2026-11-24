@@ -19,7 +19,7 @@ Watches tech news sites and your X home timeline, and keeps you up to date on Te
 - Links in messages always come from the fetched data, never from model output. Feed text is treated as untrusted data.
 - The CLI runs with every tool, MCP server and settings file disabled, and with a clean environment (so no `ANTHROPIC_API_KEY` can switch it to API billing).
 - When the plan's usage limit is hit, items stay unscored and are retried for up to 48 hours.
-- An item is marked as sent only after Telegram accepts it, so failed sends are retried on the next run.
+- An item is marked as sent only after Telegram accepts it, so failed sends are retried on the next run. A message Telegram rejects for its content (bad HTML, too long) is resent once as plain text; if that fails too, it is logged and skipped, so it cannot block the messages behind it. Items the digest leaves out stay pending for the next digest (within 36 hours).
 - X bills per post read, so reads are capped per request and per UTC day (`x.max_posts_per_poll`, `x.max_posts_per_day`). The order is mentions, then accounts, then home timeline, so the daily budget goes to the important feeds first. Each feed only reads posts newer than its last read. If more posts arrive than the cap allows, the excess is skipped.
 
 ## Build and test

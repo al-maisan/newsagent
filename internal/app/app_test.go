@@ -11,6 +11,7 @@ import (
 
 	"github.com/al-maisan/newsagent/internal/llm"
 	"github.com/al-maisan/newsagent/internal/store"
+	"github.com/al-maisan/newsagent/internal/telegram"
 )
 
 type fakeModel struct {
@@ -154,11 +155,40 @@ func TestDigestDropsUnknownIDs(t *testing.T) {
 	}}
 	a, sent := newApp(t, m, []store.Item{item("1", "A")})
 	a.Poll(context.Background())
+	if err := a.Digest(context.Background(), store.Daily); err == nil {
+		t.Fatal("want error when nothing can be rendered")
+	}
+	if len(*sent) != 0 {
+		t.Fatalf("model-invented entry sent: %q", *sent)
+	}
+	// The item was not marked: a later digest still carries it.
+	m.sections = nil
 	if err := a.Digest(context.Background(), store.Daily); err != nil {
 		t.Fatal(err)
 	}
-	if len(*sent) != 1 || strings.Contains((*sent)[0], "made up") || strings.Contains((*sent)[0], "Fake") {
-		t.Fatalf("model-invented entry rendered: %q", *sent)
+	if len(*sent) != 1 || !strings.Contains((*sent)[0], "https://e.com/1") {
+		t.Fatalf("item lost: %q", *sent)
+	}
+}
+
+func TestDigestKeepsLeftOutItems(t *testing.T) {
+	m := &fakeModel{scores: map[string]int{"A": 7, "B": 6}, sections: []llm.Section{
+		{Heading: "Tech", Entries: []llm.Entry{{Text: "about A", ItemIDs: []int64{1}}, {Text: " ", ItemIDs: []int64{2}}}},
+	}}
+	a, sent := newApp(t, m, []store.Item{item("1", "A"), item("2", "B")})
+	a.Poll(context.Background())
+	if err := a.Digest(context.Background(), store.Daily); err != nil {
+		t.Fatal(err)
+	}
+	if len(*sent) != 1 || strings.Contains((*sent)[0], "https://e.com/2") {
+		t.Fatalf("bad first digest: %q", *sent)
+	}
+	m.sections = nil
+	if err := a.Digest(context.Background(), store.Daily); err != nil {
+		t.Fatal(err)
+	}
+	if len(*sent) != 2 || !strings.Contains((*sent)[1], "https://e.com/2") || strings.Contains((*sent)[1], "https://e.com/1") {
+		t.Fatalf("left-out item not carried over: %q", *sent)
 	}
 }
 
@@ -232,5 +262,51 @@ func TestHourlyThenDaily(t *testing.T) {
 	a.Digest(context.Background(), store.Hourly)
 	if len(*sent) != 2 {
 		t.Fatalf("hourly after daily: %q", *sent)
+	}
+}
+
+func TestPollRejectedUrgentSkipped(t *testing.T) {
+	m := &fakeModel{scores: map[string]int{"Huge": 10, "Big": 9}}
+	a, sent := newApp(t, m, []store.Item{item("1", "Huge"), item("2", "Big")})
+	send := a.Send
+	tries := 0
+	a.Send = func(ctx context.Context, s string) error {
+		if strings.Contains(s, "Huge") {
+			tries++
+			return &telegram.APIError{Code: 400, Description: "Bad Request: message is too long"}
+		}
+		return send(ctx, s)
+	}
+	if err := a.Poll(context.Background()); err == nil {
+		t.Fatal("want error for the rejected ping")
+	}
+	if len(*sent) != 1 || !strings.Contains((*sent)[0], "Big") {
+		t.Fatalf("ping behind a rejected one not sent: %q", *sent)
+	}
+	if err := a.Poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if tries != 1 || len(*sent) != 1 {
+		t.Fatalf("rejected ping retried: tries=%d sent=%q", tries, *sent)
+	}
+}
+
+func TestDigestRejectedPartSkipped(t *testing.T) {
+	m := &fakeModel{scores: map[string]int{"A": 7}}
+	a, sent := newApp(t, m, []store.Item{item("1", "A")})
+	a.Poll(context.Background())
+	send := a.Send
+	a.Send = func(context.Context, string) error {
+		return &telegram.APIError{Code: 400, Description: "Bad Request: can't parse entities"}
+	}
+	if err := a.Digest(context.Background(), store.Daily); err == nil {
+		t.Fatal("want error for the rejected part")
+	}
+	a.Send = send
+	if err := a.Digest(context.Background(), store.Daily); err != nil {
+		t.Fatal(err)
+	}
+	if len(*sent) != 0 {
+		t.Fatalf("rejected digest retried: %q", *sent)
 	}
 }

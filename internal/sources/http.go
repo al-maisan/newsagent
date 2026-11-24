@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"regexp"
@@ -56,13 +57,12 @@ func getJSON(ctx context.Context, c *http.Client, url string, hdr http.Header, v
 
 var (
 	tagRe   = regexp.MustCompile(`<[^>]*>`)
-	spaceRe = regexp.MustCompile(`\s+`)
+	spaceRe = regexp.MustCompile(`[\s\p{Zs}]+`)
 )
 
-// plain strips HTML tags, unescapes common entities and collapses whitespace.
+// plain strips HTML tags, unescapes entities and collapses whitespace.
 func plain(s string) string {
-	s = tagRe.ReplaceAllString(s, " ")
-	s = strings.NewReplacer("&amp;", "&", "&lt;", "<", "&gt;", ">", "&quot;", `"`, "&#39;", "'", "&nbsp;", " ").Replace(s)
+	s = html.UnescapeString(tagRe.ReplaceAllString(s, " "))
 	return strings.TrimSpace(spaceRe.ReplaceAllString(s, " "))
 }
 
