@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -85,10 +86,15 @@ const (
 
 type xTimeline struct {
 	Data []struct {
-		ID            string `json:"id"`
-		Text          string `json:"text"`
-		AuthorID      string `json:"author_id"`
-		CreatedAt     string `json:"created_at"`
+		ID        string `json:"id"`
+		Text      string `json:"text"`
+		AuthorID  string `json:"author_id"`
+		CreatedAt string `json:"created_at"`
+		// ReferencedTweets marks reposts ({"type":"retweeted","id":original}).
+		ReferencedTweets []struct {
+			Type string `json:"type"`
+			ID   string `json:"id"`
+		} `json:"referenced_tweets"`
 		PublicMetrics struct {
 			Likes   int `json:"like_count"`
 			Reposts int `json:"retweet_count"`
@@ -210,7 +216,7 @@ func (x *X) read(ctx context.Context, kv KV, b *budget, now time.Time, path, sin
 	}
 	q := url.Values{
 		"max_results": {strconv.Itoa(n)},
-		"post.fields": {"created_at,author_id,public_metrics"},
+		"post.fields": {"created_at,author_id,public_metrics,referenced_tweets"},
 	}
 	if excludeReplies {
 		q.Set("exclude", "replies")
@@ -255,15 +261,33 @@ func (x *X) read(ctx context.Context, kv KV, b *budget, now time.Time, path, sin
 			name = names[p.AuthorID]
 		}
 		// Billed already: keep the post even if its author's name is unknown.
-		text := plain(p.Text)
-		title, link := text, "https://x.com/i/web/status/"+url.PathEscape(p.ID)
+		id, text := p.ID, plain(p.Text)
+		title, link := text, "https://x.com/i/web/status/"+url.PathEscape(id)
 		if name != "" {
 			title = "@" + name + ": " + text
-			link = "https://x.com/" + url.PathEscape(name) + "/status/" + url.PathEscape(p.ID)
+			link = "https://x.com/" + url.PathEscape(name) + "/status/" + url.PathEscape(id)
+		}
+		// A repost is stored as its original, like xsearch does, so the same
+		// post reposted by several accounts or read by both sources is one
+		// item. Its author and text come from "RT @author: …" (looking them up
+		// would be billed).
+		for _, r := range p.ReferencedTweets {
+			if r.Type != "retweeted" || r.ID == "" {
+				continue
+			}
+			id, link = r.ID, "https://x.com/i/web/status/"+url.PathEscape(r.ID)
+			if m := rtPrefix.FindStringSubmatch(text); m != nil {
+				text = m[2]
+				link = "https://x.com/" + url.PathEscape(m[1]) + "/status/" + url.PathEscape(r.ID)
+				if name != "" {
+					title = "@" + name + " reposted @" + m[1] + ": " + text
+				}
+			}
+			break
 		}
 		out = append(out, store.Item{
 			Source:    "x",
-			ExtID:     p.ID,
+			ExtID:     id,
 			Title:     clip(title, 300),
 			URL:       link,
 			Author:    name,
@@ -374,6 +398,9 @@ func (x *X) usernames(ctx context.Context, kv KV, ids []string, now time.Time) m
 	}
 	return names
 }
+
+// rtPrefix splits a repost's text "RT @author: text".
+var rtPrefix = regexp.MustCompile(`(?s)^RT @(\w{1,15}): ?(.*)$`)
 
 // userID returns the authenticated user's id, looked up once and cached.
 func (x *X) userID(ctx context.Context, kv KV) (string, error) {

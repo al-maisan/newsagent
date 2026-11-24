@@ -50,6 +50,7 @@ const (
 	urgentWindow    = 24 * time.Hour
 	digestWindow    = 36 * time.Hour
 	digestMaxItems  = 80
+	digestMaxAlways = 30             // always-digest items per digest; the rest is for news
 	sentWindow      = 24 * time.Hour // earlier digests the model is told about
 	maxSentTitles   = 150
 	chunkLimit      = 4000          // below telegram.MaxLen to leave headroom
@@ -190,9 +191,13 @@ func (a *App) sendUrgent(ctx context.Context, now time.Time) error {
 // it would fail again.
 func (a *App) Digest(ctx context.Context, kind store.DigestKind) error {
 	now := a.Now()
-	items, err := a.Store.PendingDigest(ctx, kind, a.DigestScore, now.Add(-digestWindow), digestMaxItems)
+	items, err := a.Store.PendingDigest(ctx, kind, a.DigestScore, now.Add(-digestWindow), digestMaxItems, digestMaxAlways)
 	if err != nil {
 		return err
+	}
+	if n := countPriority(items, store.PriorityDigest); n == digestMaxAlways {
+		// More may be waiting; they go into later digests or age out after digestWindow.
+		slog.Info("digest: always-digest cap reached, the rest stay pending", "cap", digestMaxAlways)
 	}
 	if len(items) == 0 {
 		slog.Info("digest: nothing notable")
@@ -255,6 +260,16 @@ func (a *App) Digest(ctx context.Context, kind store.DigestKind) error {
 	}
 	slog.Info("digest sent", "items", shown, "repeats", len(repeats), "sections", len(sections))
 	return errors.Join(errs...)
+}
+
+func countPriority(items []store.Item, p string) int {
+	n := 0
+	for _, it := range items {
+		if it.Priority == p {
+			n++
+		}
+	}
+	return n
 }
 
 // delivered drops the ids whose link shows up only in rejected parts: those
