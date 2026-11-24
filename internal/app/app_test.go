@@ -265,6 +265,17 @@ func TestHourlyThenDaily(t *testing.T) {
 	}
 }
 
+func TestPollTransientFailureGivesUpLater(t *testing.T) {
+	m := &fakeModel{scoreErr: &llm.TransientError{Err: errors.New("usage limit")}}
+	a, _ := newApp(t, m, []store.Item{item("1", "X")})
+	for range store.MaxScoreRetries + 2 {
+		a.Poll(context.Background())
+	}
+	if m.scoreCall != store.MaxScoreRetries {
+		t.Fatalf("want %d tries, got %d", store.MaxScoreRetries, m.scoreCall)
+	}
+}
+
 func TestPollRejectedUrgentSkipped(t *testing.T) {
 	m := &fakeModel{scores: map[string]int{"Huge": 10, "Big": 9}}
 	a, sent := newApp(t, m, []store.Item{item("1", "Huge"), item("2", "Big")})

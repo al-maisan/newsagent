@@ -112,6 +112,11 @@ func (a *App) score(ctx context.Context, now time.Time) error {
 		scores, err := a.Model.Score(ctx, items, reported)
 		if err != nil {
 			if llm.IsTransient(err) {
+				// Counted separately, with a higher cap, so a batch that
+				// always fails "transiently" can't block newer items forever.
+				if serr := a.Store.CountScoreRetry(ctx, ids); serr != nil {
+					return errors.Join(err, serr)
+				}
 				return fmt.Errorf("score (will retry): %w", err)
 			}
 			// Count the attempt so a batch that always fails is given up.

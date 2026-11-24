@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS items (
 	summary        TEXT    NOT NULL DEFAULT '',
 	duplicate      INTEGER NOT NULL DEFAULT 0,
 	score_attempts INTEGER NOT NULL DEFAULT 0,
+	score_retries  INTEGER NOT NULL DEFAULT 0,
 	urgent_sent_at INTEGER,
 	digest_sent_at INTEGER,
 	hourly_sent_at INTEGER,
@@ -76,6 +77,11 @@ CREATE TABLE IF NOT EXISTS kv (
 
 // MaxScoreAttempts is how often scoring is retried before an item is given up.
 const MaxScoreAttempts = 3
+
+// MaxScoreRetries is how often scoring may fail transiently (usage limit,
+// CLI crash) before an item is given up: about 6 hours of 15-minute polls.
+// It keeps one batch that always fails from blocking all newer items.
+const MaxScoreRetries = 24
 
 // Store wraps the SQLite database.
 type Store struct{ db *sql.DB }
@@ -115,6 +121,7 @@ func migrate(db *sql.DB) error {
 	for _, c := range []struct{ name, def string }{
 		{"priority", "TEXT NOT NULL DEFAULT ''"},
 		{"hourly_sent_at", "INTEGER"},
+		{"score_retries", "INTEGER NOT NULL DEFAULT 0"},
 	} {
 		var n int
 		err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('items') WHERE name = ?`, c.name).Scan(&n)
@@ -178,8 +185,23 @@ func (s *Store) Insert(ctx context.Context, items []Item, now time.Time) (int, e
 
 // Unscored returns items fetched after since that still need a score.
 func (s *Store) Unscored(ctx context.Context, since time.Time, limit int) ([]Item, error) {
-	return s.query(ctx, `WHERE score IS NULL AND score_attempts < ? AND fetched_at > ?
-		ORDER BY id LIMIT ?`, MaxScoreAttempts, since.Unix(), limit)
+	return s.query(ctx, `WHERE score IS NULL AND score_attempts < ? AND score_retries < ? AND fetched_at > ?
+		ORDER BY id LIMIT ?`, MaxScoreAttempts, MaxScoreRetries, since.Unix(), limit)
+}
+
+// CountScoreRetry counts a transient scoring failure for every id.
+func (s *Store) CountScoreRetry(ctx context.Context, ids []int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, id := range ids {
+		if _, err := tx.ExecContext(ctx, `UPDATE items SET score_retries = score_retries + 1 WHERE id = ?`, id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // SaveScores stores scores and counts a failed attempt for every id in

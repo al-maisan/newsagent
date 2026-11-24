@@ -114,7 +114,8 @@ func TestMigrateAddsPriority(t *testing.T) {
 	}
 	old := strings.Replace(schema, "priority       TEXT    NOT NULL DEFAULT '',\n", "", 1)
 	old = strings.Replace(old, "hourly_sent_at INTEGER,\n", "", 1)
-	if strings.Contains(old, "priority ") || strings.Contains(old, "hourly_sent_at") {
+	old = strings.Replace(old, "score_retries  INTEGER NOT NULL DEFAULT 0,\n", "", 1)
+	if strings.Contains(old, "priority ") || strings.Contains(old, "hourly_sent_at") || strings.Contains(old, "score_retries") {
 		t.Fatal("test setup: priority column not found in schema")
 	}
 	if _, err := db.Exec(old); err != nil {
@@ -132,6 +133,9 @@ func TestMigrateAddsPriority(t *testing.T) {
 	}
 	if err := s.MarkDigestSent(context.Background(), Hourly, []int64{1}, time.Now()); err != nil {
 		t.Fatalf("hourly column after migration: %v", err)
+	}
+	if un, err := s.Unscored(context.Background(), time.Unix(0, 0), 10); err != nil || len(un) != 1 {
+		t.Fatalf("score_retries column after migration: %v %v", un, err)
 	}
 }
 
@@ -173,6 +177,7 @@ func TestMigrateConcurrent(t *testing.T) {
 		}
 		old := strings.Replace(schema, "priority       TEXT    NOT NULL DEFAULT '',\n", "", 1)
 		old = strings.Replace(old, "hourly_sent_at INTEGER,\n", "", 1)
+		old = strings.Replace(old, "score_retries  INTEGER NOT NULL DEFAULT 0,\n", "", 1)
 		// Like a real database: newsagent always ran it in WAL mode.
 		if _, err := db.Exec(`PRAGMA journal_mode=WAL;` + old); err != nil {
 			t.Fatal(err)
@@ -193,5 +198,29 @@ func TestMigrateConcurrent(t *testing.T) {
 				t.Fatalf("round %d: concurrent open: %v", round, err)
 			}
 		}
+	}
+}
+
+func TestScoreRetriesGiveUp(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	now := time.Now()
+	s.Insert(ctx, []Item{{Source: "a", ExtID: "1", Title: "t", URL: "https://e"}}, now)
+	un, _ := s.Unscored(ctx, now.Add(-time.Hour), 10)
+	for range MaxScoreRetries - 1 {
+		if err := s.CountScoreRetry(ctx, []int64{un[0].ID}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if un, _ = s.Unscored(ctx, now.Add(-time.Hour), 10); len(un) != 1 {
+		t.Fatal("given up too early")
+	}
+	s.CountScoreRetry(ctx, []int64{un[0].ID})
+	if un, _ = s.Unscored(ctx, now.Add(-time.Hour), 10); len(un) != 0 {
+		t.Fatalf("not given up after %d retries", MaxScoreRetries)
 	}
 }
