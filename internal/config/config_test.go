@@ -44,6 +44,7 @@ func TestLoadErrors(t *testing.T) {
 		"duplicate feed": `{"feeds":[{"name":"hn","url":"https://a"}],"llm":{"interests":"x"},"telegram":{"chat_id":"1"}}`,
 		"bad effort":     `{"llm":{"interests":"x","score_effort":"huge"},"telegram":{"chat_id":"1"}}`,
 		"no chat":        `{"llm":{"interests":"x"}}`,
+		"chat template":  `{"llm":{"interests":"x"},"telegram":{"chat_id":"REPLACE_WITH_CHAT_ID"}}`,
 		"bad duration":   `{"max_age":"soon","llm":{"interests":"x"},"telegram":{"chat_id":"1"}}`,
 		"max_age long":   `{"max_age":"720h","llm":{"interests":"x"},"telegram":{"chat_id":"1"}}`,
 		"bad timezone":   `{"timezone":"Mars/Base","llm":{"interests":"x"},"telegram":{"chat_id":"1"}}`,
@@ -71,5 +72,20 @@ func TestLoadX(t *testing.T) {
 		if want == "" && err != nil || want != "" && (err == nil || !strings.Contains(err.Error(), want)) {
 			t.Errorf("%s: got %v, want %q", prefix, err, want)
 		}
+	}
+}
+
+func TestLoadAcceptsChatIDsAndDisabledHN(t *testing.T) {
+	for _, cfg := range []string{
+		`{"llm":{"interests":"x"},"telegram":{"chat_id":"-1001234567890"}}`,
+		`{"llm":{"interests":"x"},"telegram":{"chat_id":"@my_channel"}}`,
+		`{"hn":{"enabled":false,"top_n":0},"llm":{"interests":"x"},"telegram":{"chat_id":"1"}}`,
+	} {
+		if _, err := Load(write(t, cfg), env(baseEnv)); err != nil {
+			t.Errorf("%s: %v", cfg, err)
+		}
+	}
+	if _, err := Load(write(t, `{"hn":{"enabled":true,"top_n":0},"llm":{"interests":"x"},"telegram":{"chat_id":"1"}}`), env(baseEnv)); err == nil {
+		t.Error("enabled hn with top_n 0: want error")
 	}
 }

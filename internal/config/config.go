@@ -87,6 +87,10 @@ type Secrets struct {
 
 var xUsername = regexp.MustCompile(`^[A-Za-z0-9_]{1,15}$`)
 
+// chatID is a Telegram chat id: a number (negative for groups) or a public
+// channel's @username.
+var chatID = regexp.MustCompile(`^(-?[0-9]{1,20}|@[A-Za-z0-9_]{5,32})$`)
+
 var efforts = map[string]bool{"low": true, "medium": true, "high": true, "xhigh": true, "max": true}
 
 // Load reads path, applies defaults, reads secrets and validates everything.
@@ -142,7 +146,9 @@ func (c *Config) validate() error {
 	if _, err := time.LoadLocation(c.Timezone); err != nil {
 		errs = append(errs, fmt.Errorf("timezone: %w", err))
 	}
-	check(c.HN.TopN > 0 && c.HN.TopN <= 500, "hn.top_n must be 1..500")
+	if c.HN.Enabled {
+		check(c.HN.TopN > 0 && c.HN.TopN <= 500, "hn.top_n must be 1..500")
+	}
 	names := map[string]bool{"hn": true, "x": true}
 	for _, f := range c.Feeds {
 		check(f.Name != "" && !names[f.Name], fmt.Sprintf("feed name %q is empty or not unique", f.Name))
@@ -172,7 +178,7 @@ func (c *Config) validate() error {
 	check(c.Thresholds.Urgent >= 0 && c.Thresholds.Urgent <= 10 && c.Thresholds.Digest >= 0 && c.Thresholds.Digest <= 10,
 		"thresholds must be 0..10")
 	check(c.Thresholds.MaxUrgentPoll >= 0, "thresholds.max_urgent_per_poll must be >= 0")
-	check(c.Telegram.ChatID != "", "telegram.chat_id is empty")
+	check(chatID.MatchString(c.Telegram.ChatID), fmt.Sprintf("telegram.chat_id %q must be a number or @channelname", c.Telegram.ChatID))
 	check(c.Secrets.ClaudeOAuthToken != "", "CLAUDE_CODE_OAUTH_TOKEN is missing (run: claude setup-token)")
 	check(c.Secrets.TelegramToken != "", "TELEGRAM_BOT_TOKEN is missing")
 	return errors.Join(errs...)
