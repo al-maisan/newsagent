@@ -93,27 +93,26 @@ func TestPriority(t *testing.T) {
 	if len(urg) != 1 || urg[0].Priority != PriorityPing {
 		t.Fatalf("unscored ping item must be pending: %+v", urg)
 	}
-	if dig, _ := s.PendingDigest(ctx, 6, since, 5); len(dig) != 0 {
+	if dig, _ := s.PendingDigest(ctx, Daily, 6, since, 5); len(dig) != 0 {
 		t.Fatalf("ping item must not be in digest: %+v", dig)
 	}
 	s.Insert(ctx, []Item{{Source: "x", ExtID: "2", Title: "d", URL: "https://x/2", Priority: PriorityDigest}}, now)
-	if dig, _ := s.PendingDigest(ctx, 6, since, 5); len(dig) != 1 || dig[0].ExtID != "2" {
+	if dig, _ := s.PendingDigest(ctx, Daily, 6, since, 5); len(dig) != 1 || dig[0].ExtID != "2" {
 		t.Fatalf("unscored digest item must be in digest: %+v", dig)
 	}
 }
 
-func TestMigrateAddsColumns(t *testing.T) {
+func TestMigrateAddsPriority(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "old.db")
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	old := schema
-	for _, col := range []string{"priority       TEXT    NOT NULL DEFAULT '',\n", "score_retries  INTEGER NOT NULL DEFAULT 0,\n"} {
-		if !strings.Contains(old, col) {
-			t.Fatalf("test setup: %q not found in schema", col)
-		}
-		old = strings.Replace(old, col, "", 1)
+	old := strings.Replace(schema, "priority       TEXT    NOT NULL DEFAULT '',\n", "", 1)
+	old = strings.Replace(old, "hourly_sent_at INTEGER,\n", "", 1)
+	old = strings.Replace(old, "score_retries  INTEGER NOT NULL DEFAULT 0,\n", "", 1)
+	if strings.Contains(old, "priority ") || strings.Contains(old, "hourly_sent_at") || strings.Contains(old, "score_retries") {
+		t.Fatal("test setup: priority column not found in schema")
 	}
 	if _, err := db.Exec(old); err != nil {
 		t.Fatal(err)
@@ -128,8 +127,73 @@ func TestMigrateAddsColumns(t *testing.T) {
 	if _, err := s.Insert(context.Background(), []Item{{Source: "a", ExtID: "1", Title: "t", URL: "https://e", Priority: PriorityPing}}, time.Now()); err != nil {
 		t.Fatalf("insert after migration: %v", err)
 	}
+	if err := s.MarkDigestSent(context.Background(), Hourly, []int64{1}, time.Now()); err != nil {
+		t.Fatalf("hourly column after migration: %v", err)
+	}
 	if un, err := s.Unscored(context.Background(), time.Unix(0, 0), 10); err != nil || len(un) != 1 {
-		t.Fatalf("unscored after migration: %v %v", un, err)
+		t.Fatalf("score_retries column after migration: %v %v", un, err)
+	}
+}
+
+func TestDigestKinds(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	now := time.Date(2026, 11, 24, 10, 0, 0, 0, time.UTC)
+	since := now.Add(-time.Hour)
+	s.Insert(ctx, []Item{{Source: "a", ExtID: "1", Title: "t", URL: "https://e/1"}}, now)
+	un, _ := s.Unscored(ctx, since, 5)
+	s.SaveScores(ctx, []int64{un[0].ID}, []Score{{ID: un[0].ID, Score: 8}})
+	id := []int64{un[0].ID}
+
+	if err := s.MarkDigestSent(ctx, Hourly, id, now); err != nil {
+		t.Fatal(err)
+	}
+	if h, _ := s.PendingDigest(ctx, Hourly, 6, since, 5); len(h) != 0 {
+		t.Fatal("hourly must skip items already sent hourly")
+	}
+	if d, _ := s.PendingDigest(ctx, Daily, 6, since, 5); len(d) != 1 {
+		t.Fatal("daily must include items sent hourly")
+	}
+	s.MarkDigestSent(ctx, Daily, id, now)
+	if d, _ := s.PendingDigest(ctx, Daily, 6, since, 5); len(d) != 0 {
+		t.Fatal("daily must skip items sent daily")
+	}
+}
+
+func TestMigrateConcurrent(t *testing.T) {
+	for round := range 20 {
+		path := filepath.Join(t.TempDir(), "old.db")
+		db, err := sql.Open("sqlite", path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		old := strings.Replace(schema, "priority       TEXT    NOT NULL DEFAULT '',\n", "", 1)
+		old = strings.Replace(old, "hourly_sent_at INTEGER,\n", "", 1)
+		old = strings.Replace(old, "score_retries  INTEGER NOT NULL DEFAULT 0,\n", "", 1)
+		// Like a real database: newsagent always ran it in WAL mode.
+		if _, err := db.Exec(`PRAGMA journal_mode=WAL;` + old); err != nil {
+			t.Fatal(err)
+		}
+		db.Close()
+		errs := make(chan error, 4)
+		for range 4 {
+			go func() {
+				s, err := Open(path)
+				if err == nil {
+					s.Close()
+				}
+				errs <- err
+			}()
+		}
+		for range 4 {
+			if err := <-errs; err != nil {
+				t.Fatalf("round %d: concurrent open: %v", round, err)
+			}
+		}
 	}
 }
 
@@ -154,37 +218,5 @@ func TestScoreRetriesGiveUp(t *testing.T) {
 	s.CountScoreRetry(ctx, []int64{un[0].ID})
 	if un, _ = s.Unscored(ctx, now.Add(-time.Hour), 10); len(un) != 0 {
 		t.Fatalf("not given up after %d retries", MaxScoreRetries)
-	}
-}
-
-func TestMigrateConcurrent(t *testing.T) {
-	for round := range 20 {
-		path := filepath.Join(t.TempDir(), "old.db")
-		db, err := sql.Open("sqlite", path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		old := strings.Replace(schema, "priority       TEXT    NOT NULL DEFAULT '',\n", "", 1)
-		old = strings.Replace(old, "score_retries  INTEGER NOT NULL DEFAULT 0,\n", "", 1)
-		// Like a real database: newsagent always ran it in WAL mode.
-		if _, err := db.Exec(`PRAGMA journal_mode=WAL;` + old); err != nil {
-			t.Fatal(err)
-		}
-		db.Close()
-		errs := make(chan error, 4)
-		for range 4 {
-			go func() {
-				s, err := Open(path)
-				if err == nil {
-					s.Close()
-				}
-				errs <- err
-			}()
-		}
-		for range 4 {
-			if err := <-errs; err != nil {
-				t.Fatalf("round %d: concurrent open: %v", round, err)
-			}
-		}
 	}
 }

@@ -1,0 +1,10 @@
+[Unit]
+Description=newsagent hourly digest, 09:00-23:00 Istanbul time (08:00 and 18:00 are the daily digests)
+
+[Timer]
+OnCalendar=*-*-* 09..17,19..23:00:00 Europe/Istanbul
+# No catch-up after downtime: the next daily digest covers missed hours.
+Persistent=false
+
+[Install]
+WantedBy=timers.target
