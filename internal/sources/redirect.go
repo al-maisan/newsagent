@@ -31,7 +31,8 @@ func CheckRedirect(req *http.Request, via []*http.Request) error {
 // private, CGNAT, link-local, multicast or unspecified addresses, so a
 // compromised feed can't point newsagent at internal services. The check runs
 // on the address actually dialed, after DNS resolution, so DNS rebinding
-// can't slip past it. Hosts in allow (the configured feeds) may be private.
+// can't slip past it. Hosts in allow skip the check (and their DNS is
+// trusted): pass only hosts the user marked private or IP literals.
 func Transport(allow []string) *http.Transport {
 	ok := make(map[string]bool, len(allow))
 	for _, h := range allow {

@@ -82,7 +82,7 @@ Turn it off again with `sudo systemctl disable --now newsagent-hourly.timer`.
 | `db_path` | `/var/lib/newsagent/newsagent.db` | SQLite database file |
 | `timezone` | `UTC` | zone for times shown in digests |
 | `max_age` | `48h` | ignore items published earlier than this; must be under 30 days (the retention) |
-| `feeds` | `[]` | RSS/Atom feeds: `{"name": …, "url": …}`; names unique and not `hn` or `x`, URLs `http(s)://` |
+| `feeds` | `[]` | RSS/Atom feeds: `{"name": …, "url": …}`; names unique and not `hn` or `x`, URLs `http(s)://`. Add `"private": true` for a feed on a LAN/tailnet hostname (only for hosts you control); feeds given by IP address work without it |
 | `hn.enabled` | `false` | read Hacker News top stories |
 | `hn.top_n` | `30` | number of HN top stories to consider (1..500) |
 | `x.enabled` | `false` | read X (needs the four `X_*` secrets) |

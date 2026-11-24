@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -33,6 +35,27 @@ func (d *Duration) UnmarshalJSON(b []byte) error {
 type Feed struct {
 	Name string `json:"name"`
 	URL  string `json:"url"`
+	// Private lets newsagent connect to this feed's host on a private
+	// address (LAN, tailnet). Its DNS is then trusted: only set it for
+	// hosts you control.
+	Private bool `json:"private"`
+}
+
+// PrivateHosts returns the hosts that may resolve to private addresses:
+// feeds marked private, and feeds whose host is an IP literal (no DNS, so
+// nothing to rebind). Every other host is checked on each connection.
+func (c *Config) PrivateHosts() []string {
+	var hosts []string
+	for _, f := range c.Feeds {
+		u, err := url.Parse(f.URL)
+		if err != nil {
+			continue
+		}
+		if h := u.Hostname(); f.Private || net.ParseIP(h) != nil {
+			hosts = append(hosts, h)
+		}
+	}
+	return hosts
 }
 
 // Config is the newsagent configuration.

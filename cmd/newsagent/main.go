@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -56,17 +55,12 @@ func run() error {
 	defer st.Close()
 
 	loc, _ := time.LoadLocation(cfg.Timezone) // validated in config.Load
-	var feedHosts []string
 	for _, f := range cfg.Feeds {
 		if strings.HasPrefix(f.URL, "http://") {
 			slog.Warn("feed uses plain http: its content can be changed in transit", "feed", f.Name)
 		}
-		if u, err := url.Parse(f.URL); err == nil {
-			feedHosts = append(feedHosts, u.Hostname())
-		}
 	}
-	// Only the configured feeds' hosts may be private (LAN, tailnet).
-	hc := &http.Client{Timeout: 30 * time.Second, Transport: sources.Transport(feedHosts), CheckRedirect: sources.CheckRedirect}
+	hc := &http.Client{Timeout: 30 * time.Second, Transport: sources.Transport(cfg.PrivateHosts()), CheckRedirect: sources.CheckRedirect}
 	tg := &telegram.Client{HTTP: hc, BaseURL: telegram.BaseURL, Token: cfg.Secrets.TelegramToken, ChatID: cfg.Telegram.ChatID}
 	a := &app.App{
 		Store: st,

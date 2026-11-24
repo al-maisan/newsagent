@@ -106,7 +106,24 @@ func TestExampleConfigPlaceholders(t *testing.T) {
 		t.Fatal(rerr)
 	}
 	fixed := strings.NewReplacer(`"REPLACE_WITH_CHAT_ID"`, `"12345"`, `"REPLACE_OR_REMOVE"`, `"real_account"`).Replace(string(b))
-	if _, err := Load(write(t, fixed), env(xEnv)); err != nil {
+	c, err := Load(write(t, fixed), env(xEnv))
+	if err != nil {
 		t.Fatalf("example config with placeholders filled in must load: %v", err)
+	}
+	if h := c.PrivateHosts(); len(h) != 0 {
+		t.Fatalf("public example feeds must all be checked, got exempt hosts %v", h)
+	}
+}
+
+func TestPrivateHosts(t *testing.T) {
+	c := &Config{Feeds: []Feed{
+		{Name: "public", URL: "https://lobste.rs/rss"},
+		{Name: "nas", URL: "http://nas.lan:8080/rss", Private: true},
+		{Name: "ip", URL: "http://192.168.1.5/rss"},
+		{Name: "ip6", URL: "http://[fd7a:115c::1]/rss"},
+	}}
+	got := strings.Join(c.PrivateHosts(), ",")
+	if got != "nas.lan,192.168.1.5,fd7a:115c::1" {
+		t.Fatalf("PrivateHosts = %q; a public feed host must never be exempt", got)
 	}
 }
