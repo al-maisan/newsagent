@@ -277,13 +277,16 @@ func (c *Claude) call(ctx context.Context, system string, payload any, schema js
 	}
 	if res.IsError || res.Subtype != "success" {
 		err := fmt.Errorf("claude cli: %s: %s", res.Subtype, clip(res.Result, 300))
-		// Usage limits reset after a few hours; keep the items for later.
-		// The CLI reports them as e.g. "You've hit your 5-hour limit · resets
-		// 7:30am (UTC)", so the message itself is the most useful error text.
-		if strings.Contains(strings.ToLower(res.Result), "limit") {
+		// Plan usage limits reset after hours; keep the items for later. The
+		// CLI reports them as e.g. "You've hit your 5-hour limit · resets
+		// 7:30am (UTC)" or "…weekly limit. It resets …", so the message is the
+		// most useful error text. Short API rate limits ("rate_limit_error")
+		// also say "limit" but never "resets": they are only transient.
+		lower := strings.ToLower(res.Result)
+		if strings.Contains(lower, "limit") && strings.Contains(lower, "resets") {
 			return &TransientError{Err: fmt.Errorf("claude cli: %s", clip(strings.TrimSpace(res.Result), 300)), UsageLimit: true}
 		}
-		if s := res.APIErrorStatus; s != nil && (*s == 429 || *s >= 500) {
+		if s := res.APIErrorStatus; s != nil && (*s == 429 || *s >= 500) || strings.Contains(lower, "limit") {
 			return &TransientError{Err: err}
 		}
 		return err

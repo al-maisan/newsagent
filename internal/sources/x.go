@@ -55,6 +55,18 @@ type X struct {
 	Accounts       []string // usernames whose posts always reach the digest
 	HomeTimeline   bool
 	Alarms         Alarms // optional
+
+	seen *xSeen // what the requests of the current Fetch returned
+}
+
+// xSeen collects request outcomes during one Fetch. Alarms are decided once
+// at its end: one failing endpoint next to working ones must not raise and
+// clear the same alarm on every poll.
+type xSeen struct {
+	ok         bool // some request succeeded
+	credits    bool // some request got 402
+	authStatus int  // last auth failure (401, or 403 on own endpoints)
+	authBody   string
 }
 
 const (
@@ -109,6 +121,8 @@ func (b *budget) spend(ctx context.Context, n int) error {
 // is used up. Failing feeds are logged and skipped; an error is returned only
 // if every feed failed.
 func (x *X) Fetch(ctx context.Context, kv KV, now time.Time) ([]store.Item, error) {
+	x.seen = &xSeen{}
+	defer x.settleAlarms(ctx)
 	last, err := kv.Get(ctx, kvXLastPoll)
 	if err != nil {
 		return nil, fmt.Errorf("x last poll: %w", err)
@@ -325,22 +339,40 @@ func (x *X) get(ctx context.Context, path string, q url.Values, v any) error {
 	}
 	hdr := http.Header{"Authorization": {x.Auth.header(http.MethodGet, base, q)}}
 	err := getJSON(ctx, x.Client, u, hdr, v)
-	var he *HTTPError
-	switch {
-	case err == nil:
-		x.clear(ctx, AlarmXCredits)
-		x.clear(ctx, AlarmXAuth)
-	case !errors.As(err, &he):
-	case he.Status == http.StatusPaymentRequired:
-		x.raise(ctx, AlarmXCredits, "X API credits used up",
-			"X answered 402 Payment Required: no X reads until you buy credits or raise the spend cap (console.x.com → Billing → Credits).", alarmRepeat)
-	// 403 on another account's posts (e.g. a protected account) is not an
-	// auth problem; on the user's own endpoints it is.
-	case he.Status == http.StatusUnauthorized || he.Status == http.StatusForbidden && !strings.HasSuffix(path, "/tweets"):
-		x.raise(ctx, AlarmXAuth, "X API access denied",
-			fmt.Sprintf("X answered %d: check the X keys in /etc/newsagent/secrets.env and the app's permissions on console.x.com. Details: %s", he.Status, he.Body), alarmRepeat)
+	if s := x.seen; s != nil {
+		var he *HTTPError
+		switch {
+		case err == nil:
+			s.ok = true
+		case !errors.As(err, &he):
+		case he.Status == http.StatusPaymentRequired:
+			s.credits = true
+		// 403 on another account's posts (e.g. a protected account) is not
+		// an auth problem; on the user's own endpoints it is.
+		case he.Status == http.StatusUnauthorized || he.Status == http.StatusForbidden && !strings.HasSuffix(path, "/tweets"):
+			s.authStatus, s.authBody = he.Status, he.Body
+		}
 	}
 	return err
+}
+
+// settleAlarms raises or clears the X alarms from what this Fetch saw. A
+// Fetch without requests (too early, budget used up) changes nothing.
+func (x *X) settleAlarms(ctx context.Context) {
+	s := x.seen
+	x.seen = nil
+	if s.credits {
+		x.raise(ctx, AlarmXCredits, "X API credits used up",
+			"X answered 402 Payment Required: no X reads until you buy credits or raise the spend cap (console.x.com → Billing → Credits).", alarmRepeat)
+	} else if s.ok {
+		x.clear(ctx, AlarmXCredits)
+	}
+	if s.authStatus != 0 {
+		x.raise(ctx, AlarmXAuth, "X API access denied",
+			fmt.Sprintf("X answered %d: check the X keys in /etc/newsagent/secrets.env and the app's permissions on console.x.com. Details: %s", s.authStatus, s.authBody), alarmRepeat)
+	} else if s.ok {
+		x.clear(ctx, AlarmXAuth)
+	}
 }
 
 func (x *X) raise(ctx context.Context, key, title, detail string, repeat time.Duration) {

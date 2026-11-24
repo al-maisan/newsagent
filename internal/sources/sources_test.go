@@ -339,12 +339,21 @@ func TestXAlarms(t *testing.T) {
 	if has(rec.raised, AlarmXAuth) || !has(rec.cleared, AlarmXCredits) {
 		t.Fatalf("raised %v cleared %v", rec.raised, rec.cleared)
 	}
+	status["/users/7/tweets"] = 0
+	// One endpoint keeps failing while another works: raise, never clear in
+	// the same poll, or the alarm would flap and repeat every poll.
 	status["/users/42/mentions"] = 401
-	poll()
-	if !has(rec.raised, AlarmXAuth) {
-		t.Fatalf("401 must raise the auth alarm: %v", rec.raised)
+	for range 2 {
+		poll()
+		if !has(rec.raised, AlarmXAuth) || has(rec.cleared, AlarmXAuth) {
+			t.Fatalf("401 next to a working feed: raised %v cleared %v", rec.raised, rec.cleared)
+		}
 	}
 	status["/users/42/mentions"] = 0
+	poll()
+	if !has(rec.cleared, AlarmXAuth) || has(rec.raised, AlarmXAuth) {
+		t.Fatalf("all feeds fine must clear the auth alarm: raised %v cleared %v", rec.raised, rec.cleared)
+	}
 	kv[kvXReads+now.Add(2*time.Hour).UTC().Format("2006-01-02")] = "98"
 	poll()
 	if !has(rec.raised, AlarmXDailyCap) {
