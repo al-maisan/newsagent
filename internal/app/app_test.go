@@ -126,7 +126,7 @@ func TestDigest(t *testing.T) {
 	if err := a.Poll(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.Digest(context.Background()); err != nil {
+	if err := a.Digest(context.Background(), store.Daily); err != nil {
 		t.Fatal(err)
 	}
 	if len(*sent) != 1 {
@@ -138,7 +138,7 @@ func TestDigest(t *testing.T) {
 		t.Fatalf("bad digest %q", msg)
 	}
 	// Items are marked: next digest has nothing to send.
-	if err := a.Digest(context.Background()); err != nil {
+	if err := a.Digest(context.Background(), store.Daily); err != nil {
 		t.Fatal(err)
 	}
 	if len(*sent) != 1 {
@@ -152,11 +152,40 @@ func TestDigestDropsUnknownIDs(t *testing.T) {
 	}}
 	a, sent := newApp(t, m, []store.Item{item("1", "A")})
 	a.Poll(context.Background())
-	if err := a.Digest(context.Background()); err != nil {
+	if err := a.Digest(context.Background(), store.Daily); err == nil {
+		t.Fatal("want error when nothing can be rendered")
+	}
+	if len(*sent) != 0 {
+		t.Fatalf("model-invented entry sent: %q", *sent)
+	}
+	// The item was not marked: a later digest still carries it.
+	m.sections = nil
+	if err := a.Digest(context.Background(), store.Daily); err != nil {
 		t.Fatal(err)
 	}
-	if len(*sent) != 1 || strings.Contains((*sent)[0], "made up") || strings.Contains((*sent)[0], "Fake") {
-		t.Fatalf("model-invented entry rendered: %q", *sent)
+	if len(*sent) != 1 || !strings.Contains((*sent)[0], "https://e.com/1") {
+		t.Fatalf("item lost: %q", *sent)
+	}
+}
+
+func TestDigestKeepsLeftOutItems(t *testing.T) {
+	m := &fakeModel{scores: map[string]int{"A": 7, "B": 6}, sections: []llm.Section{
+		{Heading: "Tech", Entries: []llm.Entry{{Text: "about A", ItemIDs: []int64{1}}, {Text: " ", ItemIDs: []int64{2}}}},
+	}}
+	a, sent := newApp(t, m, []store.Item{item("1", "A"), item("2", "B")})
+	a.Poll(context.Background())
+	if err := a.Digest(context.Background(), store.Daily); err != nil {
+		t.Fatal(err)
+	}
+	if len(*sent) != 1 || strings.Contains((*sent)[0], "https://e.com/2") {
+		t.Fatalf("bad first digest: %q", *sent)
+	}
+	m.sections = nil
+	if err := a.Digest(context.Background(), store.Daily); err != nil {
+		t.Fatal(err)
+	}
+	if len(*sent) != 2 || !strings.Contains((*sent)[1], "https://e.com/2") || strings.Contains((*sent)[1], "https://e.com/1") {
+		t.Fatalf("left-out item not carried over: %q", *sent)
 	}
 }
 
@@ -181,12 +210,40 @@ func TestDigestKeepsFollowedAccounts(t *testing.T) {
 	follow.Priority = store.PriorityDigest
 	a, sent := newApp(t, m, []store.Item{item("1", "A"), follow})
 	a.Poll(context.Background())
-	if err := a.Digest(context.Background()); err != nil {
+	if err := a.Digest(context.Background(), store.Daily); err != nil {
 		t.Fatal(err)
 	}
 	msg := (*sent)[len(*sent)-1]
 	if !strings.Contains(msg, "From accounts you follow") || !strings.Contains(msg, "@esr: low") {
 		t.Fatalf("followed account dropped: %q", msg)
+	}
+}
+
+func TestHourlyThenDaily(t *testing.T) {
+	m := &fakeModel{scores: map[string]int{"A": 7}}
+	a, sent := newApp(t, m, []store.Item{item("1", "A")})
+	a.Poll(context.Background())
+	if err := a.Digest(context.Background(), store.Hourly); err != nil {
+		t.Fatal(err)
+	}
+	if len(*sent) != 1 || !strings.Contains((*sent)[0], "Hourly update") {
+		t.Fatalf("want hourly update, got %q", *sent)
+	}
+	// Next hour: nothing new, nothing sent.
+	a.Digest(context.Background(), store.Hourly)
+	if len(*sent) != 1 {
+		t.Fatalf("hourly repeated items: %q", *sent)
+	}
+	// Daily recap still carries the item, and afterwards hourly stays quiet.
+	if err := a.Digest(context.Background(), store.Daily); err != nil {
+		t.Fatal(err)
+	}
+	if len(*sent) != 2 || !strings.Contains((*sent)[1], "News digest") || !strings.Contains((*sent)[1], "https://e.com/1") {
+		t.Fatalf("daily must recap hourly items: %q", *sent)
+	}
+	a.Digest(context.Background(), store.Hourly)
+	if len(*sent) != 2 {
+		t.Fatalf("hourly after daily: %q", *sent)
 	}
 }
 
@@ -224,11 +281,11 @@ func TestDigestRejectedPartSkipped(t *testing.T) {
 	a.Send = func(context.Context, string) error {
 		return &telegram.APIError{Code: 400, Description: "Bad Request: can't parse entities"}
 	}
-	if err := a.Digest(context.Background()); err == nil {
+	if err := a.Digest(context.Background(), store.Daily); err == nil {
 		t.Fatal("want error for the rejected part")
 	}
 	a.Send = send
-	if err := a.Digest(context.Background()); err != nil {
+	if err := a.Digest(context.Background(), store.Daily); err != nil {
 		t.Fatal(err)
 	}
 	if len(*sent) != 0 {

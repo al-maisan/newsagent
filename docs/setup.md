@@ -60,9 +60,17 @@ sudo systemctl start newsagent-poll.service; journalctl -u newsagent-poll -n 50 
 sudo systemctl enable --now newsagent-poll.timer newsagent-digest.timer
 ```
 
+Optional hourly mode (short updates 09:00–23:00, on top of the daily digests):
+
+```sh
+sudo systemctl enable --now newsagent-hourly.timer
+```
+
+Turn it off again with `sudo systemctl disable --now newsagent-hourly.timer`.
+
 ## Operations
 
-- Logs: `journalctl -u newsagent-poll -u newsagent-digest -f`
+- Logs: `journalctl -u newsagent-poll -u newsagent-digest -u newsagent-hourly -f`
 - Send a digest now: `sudo systemctl start newsagent-digest.service`
 - Data: `/var/lib/newsagent/newsagent.db` (SQLite; items older than 30 days are pruned)
 - Renew `CLAUDE_CODE_OAUTH_TOKEN` yearly (`claude setup-token`). Until then, polls log `claude cli` errors.
@@ -87,4 +95,4 @@ sudo systemctl enable --now newsagent-poll.timer newsagent-digest.timer
 | `thresholds.urgent` / `thresholds.digest` | `9` / `6` | minimum score for a ping / a digest line |
 | `thresholds.max_urgent_per_poll` | `3` | cap on pings per poll |
 
-The digest schedule lives in `newsagent-digest.timer` (`OnCalendar=`).
+The digest schedules live in `newsagent-digest.timer` and `newsagent-hourly.timer` (`OnCalendar=`).
