@@ -437,3 +437,20 @@ func TestRaiseOncePerEpisode(t *testing.T) {
 		t.Fatalf("want an alarm after Clear, got %q", *sent)
 	}
 }
+
+func TestUsageLimitKeepsItems(t *testing.T) {
+	limit := &llm.TransientError{Err: errors.New("claude cli: You've hit your weekly limit · resets Mon"), UsageLimit: true}
+	m := &fakeModel{scoreErr: limit, scores: map[string]int{"A": 7}}
+	a, _ := newApp(t, m, []store.Item{item("1", "A")})
+	for range store.MaxScoreRetries + 2 {
+		a.Poll(context.Background())
+	}
+	if m.scoreCall != store.MaxScoreRetries+2 {
+		t.Fatalf("usage limit must not use up retries: %d calls", m.scoreCall)
+	}
+	m.scoreErr = nil
+	a.Poll(context.Background())
+	if un, _ := a.Store.Unscored(context.Background(), now.Add(-time.Hour), 10); len(un) != 0 {
+		t.Fatalf("item not scored after the limit reset: %+v", un)
+	}
+}

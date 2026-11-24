@@ -117,8 +117,12 @@ func (a *App) score(ctx context.Context, now time.Time) error {
 			if llm.IsTransient(err) {
 				// Counted separately, with a higher cap, so a batch that
 				// always fails "transiently" can't block newer items forever.
-				if serr := a.Store.CountScoreRetry(ctx, ids); serr != nil {
-					return errors.Join(err, serr)
+				// The plan's usage limit is not the items' fault: it pauses
+				// all calls, so those items wait (within scoreWindow) instead.
+				if !llm.IsUsageLimit(err) {
+					if serr := a.Store.CountScoreRetry(ctx, ids); serr != nil {
+						return errors.Join(err, serr)
+					}
 				}
 				return fmt.Errorf("score (will retry): %w", err)
 			}
