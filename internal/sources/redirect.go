@@ -53,7 +53,10 @@ func resolve(ctx context.Context, host string) ([]net.IP, error) {
 	return ips, nil
 }
 
+// cgnat is the shared address space (RFC 6598); Tailscale uses it for IPv4.
+var cgnat = &net.IPNet{IP: net.IPv4(100, 64, 0, 0), Mask: net.CIDRMask(10, 32)}
+
 func public(ip net.IP) bool {
 	return !(ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
-		ip.IsInterfaceLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified())
+		ip.IsInterfaceLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() || cgnat.Contains(ip))
 }
