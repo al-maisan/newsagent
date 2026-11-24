@@ -10,6 +10,7 @@ import (
 
 	"github.com/al-maisan/newsagent/internal/llm"
 	"github.com/al-maisan/newsagent/internal/store"
+	"github.com/al-maisan/newsagent/internal/telegram"
 )
 
 type fakeModel struct {
@@ -186,5 +187,51 @@ func TestDigestKeepsFollowedAccounts(t *testing.T) {
 	msg := (*sent)[len(*sent)-1]
 	if !strings.Contains(msg, "From accounts you follow") || !strings.Contains(msg, "@esr: low") {
 		t.Fatalf("followed account dropped: %q", msg)
+	}
+}
+
+func TestPollRejectedUrgentSkipped(t *testing.T) {
+	m := &fakeModel{scores: map[string]int{"Huge": 10, "Big": 9}}
+	a, sent := newApp(t, m, []store.Item{item("1", "Huge"), item("2", "Big")})
+	send := a.Send
+	tries := 0
+	a.Send = func(ctx context.Context, s string) error {
+		if strings.Contains(s, "Huge") {
+			tries++
+			return &telegram.APIError{Code: 400, Description: "Bad Request: message is too long"}
+		}
+		return send(ctx, s)
+	}
+	if err := a.Poll(context.Background()); err == nil {
+		t.Fatal("want error for the rejected ping")
+	}
+	if len(*sent) != 1 || !strings.Contains((*sent)[0], "Big") {
+		t.Fatalf("ping behind a rejected one not sent: %q", *sent)
+	}
+	if err := a.Poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if tries != 1 || len(*sent) != 1 {
+		t.Fatalf("rejected ping retried: tries=%d sent=%q", tries, *sent)
+	}
+}
+
+func TestDigestRejectedPartSkipped(t *testing.T) {
+	m := &fakeModel{scores: map[string]int{"A": 7}}
+	a, sent := newApp(t, m, []store.Item{item("1", "A")})
+	a.Poll(context.Background())
+	send := a.Send
+	a.Send = func(context.Context, string) error {
+		return &telegram.APIError{Code: 400, Description: "Bad Request: can't parse entities"}
+	}
+	if err := a.Digest(context.Background()); err == nil {
+		t.Fatal("want error for the rejected part")
+	}
+	a.Send = send
+	if err := a.Digest(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(*sent) != 0 {
+		t.Fatalf("rejected digest retried: %q", *sent)
 	}
 }

@@ -58,10 +58,42 @@ func (c *Client) Send(ctx context.Context, html string) error {
 		Description string `json:"description"`
 	}
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err := json.Unmarshal(raw, &r); err != nil || !r.OK {
-		return fmt.Errorf("telegram: http %d: %s", resp.StatusCode, r.Description)
+	if err := json.Unmarshal(raw, &r); err != nil {
+		return fmt.Errorf("telegram: http %d: bad response", resp.StatusCode)
+	}
+	if !r.OK {
+		return &APIError{Code: resp.StatusCode, Description: r.Description}
 	}
 	return nil
+}
+
+// APIError is an error response from the Bot API.
+type APIError struct {
+	Code        int
+	Description string
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("telegram: http %d: %s", e.Code, e.Description)
+}
+
+// rejections are Bot API errors caused by the message itself.
+var rejections = []string{"can't parse entities", "message is too long", "message text is empty", "text must be non-empty"}
+
+// IsRejected reports whether Telegram refused the message because of its
+// content, so sending the same message again can never succeed.
+func IsRejected(err error) bool {
+	var e *APIError
+	if !errors.As(err, &e) || e.Code != http.StatusBadRequest {
+		return false
+	}
+	d := strings.ToLower(e.Description)
+	for _, r := range rejections {
+		if strings.Contains(d, r) {
+			return true
+		}
+	}
+	return false
 }
 
 // Split cuts text into chunks of at most limit bytes at line boundaries.

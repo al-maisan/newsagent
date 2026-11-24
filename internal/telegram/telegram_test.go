@@ -3,6 +3,8 @@ package telegram
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -59,5 +61,25 @@ func TestSplit(t *testing.T) {
 	}
 	if got := Split("a\nb", 10); len(got) != 1 || got[0] != "a\nb" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestIsRejected(t *testing.T) {
+	cases := []struct {
+		err  error
+		want bool
+	}{
+		{&APIError{400, "Bad Request: can't parse entities: unclosed tag"}, true},
+		{&APIError{400, "Bad Request: message is too long"}, true},
+		{fmt.Errorf("wrapped: %w", &APIError{400, "Bad Request: message text is empty"}), true},
+		{&APIError{400, "Bad Request: chat not found"}, false},
+		{&APIError{429, "Too Many Requests: retry after 5"}, false},
+		{&APIError{403, "Forbidden: bot was blocked by the user"}, false},
+		{errors.New("can't parse entities"), false},
+	}
+	for _, tc := range cases {
+		if got := IsRejected(tc.err); got != tc.want {
+			t.Errorf("IsRejected(%v) = %v, want %v", tc.err, got, tc.want)
+		}
 	}
 }

@@ -136,21 +136,30 @@ func (a *App) sendUrgent(ctx context.Context, now time.Time) error {
 	if err != nil || len(items) == 0 {
 		return err
 	}
+	// A message Telegram rejects is marked anyway: resending it would fail
+	// again and block every ping behind it.
+	var errs []error
 	for _, it := range items {
 		if err := a.Send(ctx, a.renderUrgent(it)); err != nil {
-			return fmt.Errorf("send urgent: %w", err)
+			if !telegram.IsRejected(err) {
+				return errors.Join(append(errs, fmt.Errorf("send urgent: %w", err))...)
+			}
+			slog.Error("urgent rejected, skipped", "id", it.ID, "source", it.Source, "err", err)
+			errs = append(errs, fmt.Errorf("urgent %d rejected: %w", it.ID, err))
+		} else {
+			slog.Info("urgent sent", "id", it.ID, "source", it.Source, "score", it.Score)
 		}
 		if err := a.Store.MarkUrgentSent(ctx, it.ID, now); err != nil {
-			return fmt.Errorf("mark urgent: %w", err)
+			return errors.Join(append(errs, fmt.Errorf("mark urgent: %w", err))...)
 		}
-		slog.Info("urgent sent", "id", it.ID, "source", it.Source, "score", it.Score)
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // Digest sends a themed summary of the notable items since the last digest.
 // Items are marked only after every message part went out, so a failed send
-// is retried by the next digest (parts already delivered may repeat).
+// is retried by the next digest (parts already delivered may repeat). A part
+// Telegram rejects is skipped: resending it would fail again.
 func (a *App) Digest(ctx context.Context) error {
 	now := a.Now()
 	items, err := a.Store.PendingDigest(ctx, a.DigestScore, now.Add(-digestWindow), digestMaxItems)
@@ -166,9 +175,14 @@ func (a *App) Digest(ctx context.Context) error {
 		return fmt.Errorf("digest: %w", err)
 	}
 	msg := a.renderDigest(sections, items, now)
-	for _, part := range telegram.Split(msg, chunkLimit) {
+	var errs []error
+	for i, part := range telegram.Split(msg, chunkLimit) {
 		if err := a.Send(ctx, part); err != nil {
-			return fmt.Errorf("send digest: %w", err)
+			if !telegram.IsRejected(err) {
+				return errors.Join(append(errs, fmt.Errorf("send digest: %w", err))...)
+			}
+			slog.Error("digest part rejected, skipped", "part", i, "bytes", len(part), "err", err)
+			errs = append(errs, fmt.Errorf("digest part %d rejected: %w", i, err))
 		}
 	}
 	ids := make([]int64, len(items))
@@ -176,10 +190,10 @@ func (a *App) Digest(ctx context.Context) error {
 		ids[i] = it.ID
 	}
 	if err := a.Store.MarkDigestSent(ctx, ids, now); err != nil {
-		return fmt.Errorf("mark digest: %w", err)
+		return errors.Join(append(errs, fmt.Errorf("mark digest: %w", err))...)
 	}
 	slog.Info("digest sent", "items", len(items), "sections", len(sections))
-	return nil
+	return errors.Join(errs...)
 }
 
 func (a *App) renderUrgent(it store.Item) string {
