@@ -151,9 +151,9 @@ func (a *App) sendUrgent(ctx context.Context, now time.Time) error {
 // Digest sends a themed summary of the notable items since the last digest.
 // Items are marked only after every message part went out, so a failed send
 // is retried by the next digest (parts already delivered may repeat).
-func (a *App) Digest(ctx context.Context) error {
+func (a *App) Digest(ctx context.Context, kind store.DigestKind) error {
 	now := a.Now()
-	items, err := a.Store.PendingDigest(ctx, a.DigestScore, now.Add(-digestWindow), digestMaxItems)
+	items, err := a.Store.PendingDigest(ctx, kind, a.DigestScore, now.Add(-digestWindow), digestMaxItems)
 	if err != nil {
 		return err
 	}
@@ -165,7 +165,11 @@ func (a *App) Digest(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("digest: %w", err)
 	}
-	msg := a.renderDigest(sections, items, now)
+	title := "📰 <b>News digest</b>"
+	if kind == store.Hourly {
+		title = "🕐 <b>Hourly update</b>"
+	}
+	msg := a.renderDigest(title, sections, items, now)
 	for _, part := range telegram.Split(msg, chunkLimit) {
 		if err := a.Send(ctx, part); err != nil {
 			return fmt.Errorf("send digest: %w", err)
@@ -175,7 +179,7 @@ func (a *App) Digest(ctx context.Context) error {
 	for i, it := range items {
 		ids[i] = it.ID
 	}
-	if err := a.Store.MarkDigestSent(ctx, ids, now); err != nil {
+	if err := a.Store.MarkDigestSent(ctx, kind, ids, now); err != nil {
 		return fmt.Errorf("mark digest: %w", err)
 	}
 	slog.Info("digest sent", "items", len(items), "sections", len(sections))
@@ -196,13 +200,13 @@ func (a *App) renderUrgent(it store.Item) string {
 	return b.String()
 }
 
-func (a *App) renderDigest(sections []llm.Section, items []store.Item, now time.Time) string {
+func (a *App) renderDigest(title string, sections []llm.Section, items []store.Item, now time.Time) string {
 	byID := make(map[int64]store.Item, len(items))
 	for _, it := range items {
 		byID[it.ID] = it
 	}
 	var b strings.Builder
-	b.WriteString("📰 <b>News digest</b> · " + esc(now.In(a.Loc).Format("Mon 2 Jan 15:04")) + "\n")
+	b.WriteString(title + " · " + esc(now.In(a.Loc).Format("Mon 2 Jan 15:04")) + "\n")
 	used := map[int64]bool{}
 	for _, s := range sections {
 		var lines []string
