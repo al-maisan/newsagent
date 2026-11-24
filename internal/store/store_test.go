@@ -71,7 +71,7 @@ func TestStore(t *testing.T) {
 		t.Fatalf("missing key: %q %v", v, err)
 	}
 
-	if n, err := s.Prune(ctx, now.Add(time.Second)); err != nil || n != 2 {
+	if n, err := s.Prune(ctx, now.Add(UndatedRetention+time.Second)); err != nil || n != 2 {
 		t.Fatalf("prune: %d %v", n, err)
 	}
 }
@@ -222,5 +222,30 @@ func TestScoreRetriesGiveUp(t *testing.T) {
 	s.CountScoreRetry(ctx, []int64{un[0].ID})
 	if un, _ = s.Unscored(ctx, now.Add(-time.Hour), 10); len(un) != 0 {
 		t.Fatalf("not given up after %d retries", MaxScoreRetries)
+	}
+}
+
+func TestPruneKeepsUndatedLonger(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	now := time.Date(2026, 11, 24, 10, 0, 0, 0, time.UTC)
+	items := []Item{
+		{Source: "f", ExtID: "dated", Title: "d", URL: "https://e/1", Published: now.Add(-time.Hour)},
+		{Source: "f", ExtID: "undated", Title: "u", URL: "https://e/2"},
+	}
+	s.Insert(ctx, items, now)
+	if n, err := s.Prune(ctx, now.Add(Retention+time.Hour)); err != nil || n != 1 {
+		t.Fatalf("want only the dated item pruned: %d %v", n, err)
+	}
+	// The undated item is still known, so it is not new again.
+	if n, _ := s.Insert(ctx, items[1:], now.Add(Retention+time.Hour)); n != 0 {
+		t.Fatal("undated item re-inserted after 30 days")
+	}
+	if n, err := s.Prune(ctx, now.Add(UndatedRetention+time.Hour)); err != nil || n != 1 {
+		t.Fatalf("want the undated item pruned after a year: %d %v", n, err)
 	}
 }

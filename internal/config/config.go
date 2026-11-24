@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/al-maisan/newsagent/internal/store"
 )
 
 // Duration is a time.Duration that reads from JSON strings like "30m".
@@ -135,7 +137,8 @@ func (c *Config) validate() error {
 		}
 	}
 	check(c.DBPath != "", "db_path is empty")
-	check(c.MaxAge > 0, "max_age must be > 0")
+	check(c.MaxAge > 0 && time.Duration(c.MaxAge) < store.Retention,
+		fmt.Sprintf("max_age must be > 0 and < %s (items are pruned after that)", store.Retention))
 	if _, err := time.LoadLocation(c.Timezone); err != nil {
 		errs = append(errs, fmt.Errorf("timezone: %w", err))
 	}

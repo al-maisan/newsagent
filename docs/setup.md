@@ -72,7 +72,7 @@ Turn it off again with `sudo systemctl disable --now newsagent-hourly.timer`.
 
 - Logs: `journalctl -u newsagent-poll -u newsagent-digest -u newsagent-hourly -f`
 - Send a digest now: `sudo systemctl start newsagent-digest.service`
-- Data: `/var/lib/newsagent/newsagent.db` (SQLite; items older than 30 days are pruned)
+- Data: `/var/lib/newsagent/newsagent.db` (SQLite; items are pruned 30 days after they were fetched; items without a publish date after a year, so they are not seen as new again)
 - Renew `CLAUDE_CODE_OAUTH_TOKEN` yearly (`claude setup-token`). Until then, polls log `claude cli` errors.
 
 ## Config reference
@@ -80,7 +80,7 @@ Turn it off again with `sudo systemctl disable --now newsagent-hourly.timer`.
 | Key | Default | Meaning |
 |---|---|---|
 | `timezone` | `UTC` | zone for times shown in digests |
-| `max_age` | `48h` | ignore items published earlier than this |
+| `max_age` | `48h` | ignore items published earlier than this; must be under 30 days (the retention) |
 | `hn.top_n` | `30` | number of HN top stories to consider |
 | `x.max_posts_per_poll` | `25` | 5..100, per request |
 | `x.max_posts_per_day` | `200` | hard daily cap (UTC day) on billed reads |

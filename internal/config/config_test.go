@@ -45,6 +45,7 @@ func TestLoadErrors(t *testing.T) {
 		"bad effort":     `{"llm":{"interests":"x","score_effort":"huge"},"telegram":{"chat_id":"1"}}`,
 		"no chat":        `{"llm":{"interests":"x"}}`,
 		"bad duration":   `{"max_age":"soon","llm":{"interests":"x"},"telegram":{"chat_id":"1"}}`,
+		"max_age long":   `{"max_age":"720h","llm":{"interests":"x"},"telegram":{"chat_id":"1"}}`,
 		"bad timezone":   `{"timezone":"Mars/Base","llm":{"interests":"x"},"telegram":{"chat_id":"1"}}`,
 	}
 	for name, cfg := range cases {

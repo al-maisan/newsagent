@@ -49,7 +49,6 @@ const (
 	urgentWindow    = 24 * time.Hour
 	digestWindow    = 36 * time.Hour
 	digestMaxItems  = 80
-	retention       = 30 * 24 * time.Hour
 	chunkLimit      = 4000 // below telegram.MaxLen to leave headroom
 	maxEntryRunes   = 600
 )
@@ -87,7 +86,7 @@ func (a *App) Poll(ctx context.Context) error {
 	if err := a.sendUrgent(ctx, now); err != nil {
 		errs = append(errs, err)
 	}
-	if n, err := a.Store.Prune(ctx, now.Add(-retention)); err != nil {
+	if n, err := a.Store.Prune(ctx, now); err != nil {
 		errs = append(errs, fmt.Errorf("prune: %w", err))
 	} else if n > 0 {
 		slog.Info("pruned old items", "count", n)
