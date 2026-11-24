@@ -1,7 +1,7 @@
 // Command newsagent watches tech news sources and your X timeline and keeps
 // you up to date via Telegram.
 //
-// Usage: newsagent [-config path] poll|digest
+// Usage: newsagent [-config path] poll|digest|hourly
 package main
 
 import (
@@ -34,8 +34,9 @@ func main() {
 func run() error {
 	cfgPath := flag.String("config", "/etc/newsagent/config.json", "config file")
 	flag.Parse()
-	if flag.NArg() != 1 || (flag.Arg(0) != "poll" && flag.Arg(0) != "digest") {
-		return fmt.Errorf("usage: newsagent [-config path] poll|digest")
+	cmd := flag.Arg(0)
+	if flag.NArg() != 1 || (cmd != "poll" && cmd != "digest" && cmd != "hourly") {
+		return fmt.Errorf("usage: newsagent [-config path] poll|digest|hourly")
 	}
 	cfg, err := config.Load(*cfgPath, os.Getenv)
 	if err != nil {
@@ -102,8 +103,11 @@ func run() error {
 		}})
 	}
 
-	if flag.Arg(0) == "poll" {
+	switch cmd {
+	case "poll":
 		return a.Poll(ctx)
+	case "hourly":
+		return a.Digest(ctx, store.Hourly)
 	}
-	return a.Digest(ctx)
+	return a.Digest(ctx, store.Daily)
 }

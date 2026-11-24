@@ -93,11 +93,11 @@ func TestPriority(t *testing.T) {
 	if len(urg) != 1 || urg[0].Priority != PriorityPing {
 		t.Fatalf("unscored ping item must be pending: %+v", urg)
 	}
-	if dig, _ := s.PendingDigest(ctx, 6, since, 5); len(dig) != 0 {
+	if dig, _ := s.PendingDigest(ctx, Daily, 6, since, 5); len(dig) != 0 {
 		t.Fatalf("ping item must not be in digest: %+v", dig)
 	}
 	s.Insert(ctx, []Item{{Source: "x", ExtID: "2", Title: "d", URL: "https://x/2", Priority: PriorityDigest}}, now)
-	if dig, _ := s.PendingDigest(ctx, 6, since, 5); len(dig) != 1 || dig[0].ExtID != "2" {
+	if dig, _ := s.PendingDigest(ctx, Daily, 6, since, 5); len(dig) != 1 || dig[0].ExtID != "2" {
 		t.Fatalf("unscored digest item must be in digest: %+v", dig)
 	}
 }
@@ -109,7 +109,8 @@ func TestMigrateAddsPriority(t *testing.T) {
 		t.Fatal(err)
 	}
 	old := strings.Replace(schema, "priority       TEXT    NOT NULL DEFAULT '',\n", "", 1)
-	if old == schema {
+	old = strings.Replace(old, "hourly_sent_at INTEGER,\n", "", 1)
+	if strings.Contains(old, "priority ") || strings.Contains(old, "hourly_sent_at") {
 		t.Fatal("test setup: priority column not found in schema")
 	}
 	if _, err := db.Exec(old); err != nil {
@@ -124,5 +125,37 @@ func TestMigrateAddsPriority(t *testing.T) {
 	defer s.Close()
 	if _, err := s.Insert(context.Background(), []Item{{Source: "a", ExtID: "1", Title: "t", URL: "https://e", Priority: PriorityPing}}, time.Now()); err != nil {
 		t.Fatalf("insert after migration: %v", err)
+	}
+	if err := s.MarkDigestSent(context.Background(), Hourly, []int64{1}, time.Now()); err != nil {
+		t.Fatalf("hourly column after migration: %v", err)
+	}
+}
+
+func TestDigestKinds(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	now := time.Date(2026, 11, 24, 10, 0, 0, 0, time.UTC)
+	since := now.Add(-time.Hour)
+	s.Insert(ctx, []Item{{Source: "a", ExtID: "1", Title: "t", URL: "https://e/1"}}, now)
+	un, _ := s.Unscored(ctx, since, 5)
+	s.SaveScores(ctx, []int64{un[0].ID}, []Score{{ID: un[0].ID, Score: 8}})
+	id := []int64{un[0].ID}
+
+	if err := s.MarkDigestSent(ctx, Hourly, id, now); err != nil {
+		t.Fatal(err)
+	}
+	if h, _ := s.PendingDigest(ctx, Hourly, 6, since, 5); len(h) != 0 {
+		t.Fatal("hourly must skip items already sent hourly")
+	}
+	if d, _ := s.PendingDigest(ctx, Daily, 6, since, 5); len(d) != 1 {
+		t.Fatal("daily must include items sent hourly")
+	}
+	s.MarkDigestSent(ctx, Daily, id, now)
+	if d, _ := s.PendingDigest(ctx, Daily, 6, since, 5); len(d) != 0 {
+		t.Fatal("daily must skip items sent daily")
 	}
 }

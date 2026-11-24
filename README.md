@@ -13,7 +13,8 @@ Watches tech news sites and your X home timeline, and keeps you up to date on Te
 | Command | Run by | What it does |
 |---|---|---|
 | `newsagent poll` | `newsagent-poll.timer` (every 15 min) | fetch sources → store new items in SQLite → score with Claude → send urgent pings |
-| `newsagent digest` | `newsagent-digest.timer` (08:00, 18:00 Europe/Istanbul) | group unsent notable items into a digest → send |
+| `newsagent digest` | `newsagent-digest.timer` (08:00, 18:00 Europe/Istanbul) | group notable items since the last daily digest into a digest → send |
+| `newsagent hourly` | `newsagent-hourly.timer` (optional; 09:00–23:00 Europe/Istanbul, not 18:00) | short update with notable items that were in no digest yet → send; nothing is sent if there is nothing new |
 
 - Links in messages always come from the fetched data, never from model output. Feed text is treated as untrusted data.
 - The CLI runs with every tool, MCP server and settings file disabled, and with a clean environment (so no `ANTHROPIC_API_KEY` can switch it to API billing).

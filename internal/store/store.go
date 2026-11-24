@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS items (
 	score_attempts INTEGER NOT NULL DEFAULT 0,
 	urgent_sent_at INTEGER,
 	digest_sent_at INTEGER,
+	hourly_sent_at INTEGER,
 	priority       TEXT    NOT NULL DEFAULT '',
 	UNIQUE (source, ext_id)
 );
@@ -100,13 +101,19 @@ func Open(path string) (*Store, error) {
 
 // migrate adds columns that databases created by older versions lack.
 func migrate(db *sql.DB) error {
-	var n int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('items') WHERE name = 'priority'`).Scan(&n); err != nil {
-		return err
-	}
-	if n == 0 {
-		_, err := db.Exec(`ALTER TABLE items ADD COLUMN priority TEXT NOT NULL DEFAULT ''`)
-		return err
+	for _, c := range []struct{ name, def string }{
+		{"priority", "TEXT NOT NULL DEFAULT ''"},
+		{"hourly_sent_at", "INTEGER"},
+	} {
+		var n int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('items') WHERE name = ?`, c.name).Scan(&n); err != nil {
+			return err
+		}
+		if n == 0 {
+			if _, err := db.Exec(`ALTER TABLE items ADD COLUMN ` + c.name + ` ` + c.def); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
@@ -218,22 +225,41 @@ func (s *Store) MarkUrgentSent(ctx context.Context, id int64, now time.Time) err
 	return err
 }
 
+// DigestKind selects the daily or the hourly digest.
+type DigestKind int
+
+const (
+	// Daily digests recap everything since the last daily digest, including
+	// items already sent in an hourly digest.
+	Daily DigestKind = iota
+	// Hourly digests only carry items that were in no digest yet.
+	Hourly
+)
+
 // PendingDigest returns digest items and items scoring at least minScore
-// that were not in a digest yet, digest items first.
-func (s *Store) PendingDigest(ctx context.Context, minScore int, since time.Time, limit int) ([]Item, error) {
-	return s.query(ctx, `WHERE (priority = 'digest' OR score >= ?) AND digest_sent_at IS NULL AND fetched_at > ?
+// that the given kind of digest has not carried yet, digest items first.
+func (s *Store) PendingDigest(ctx context.Context, kind DigestKind, minScore int, since time.Time, limit int) ([]Item, error) {
+	notSent := "digest_sent_at IS NULL"
+	if kind == Hourly {
+		notSent += " AND hourly_sent_at IS NULL"
+	}
+	return s.query(ctx, `WHERE (priority = 'digest' OR score >= ?) AND `+notSent+` AND fetched_at > ?
 		ORDER BY priority = 'digest' DESC, score DESC, id LIMIT ?`, minScore, since.Unix(), limit)
 }
 
-// MarkDigestSent records that items went out in a digest.
-func (s *Store) MarkDigestSent(ctx context.Context, ids []int64, now time.Time) error {
+// MarkDigestSent records that items went out in a digest of the given kind.
+func (s *Store) MarkDigestSent(ctx context.Context, kind DigestKind, ids []int64, now time.Time) error {
+	col := "digest_sent_at"
+	if kind == Hourly {
+		col = "hourly_sent_at"
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 	for _, id := range ids {
-		if _, err := tx.ExecContext(ctx, `UPDATE items SET digest_sent_at = ? WHERE id = ?`, now.Unix(), id); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE items SET `+col+` = ? WHERE id = ?`, now.Unix(), id); err != nil {
 			return err
 		}
 	}
