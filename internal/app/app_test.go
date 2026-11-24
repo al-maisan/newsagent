@@ -151,11 +151,40 @@ func TestDigestDropsUnknownIDs(t *testing.T) {
 	}}
 	a, sent := newApp(t, m, []store.Item{item("1", "A")})
 	a.Poll(context.Background())
+	if err := a.Digest(context.Background(), store.Daily); err == nil {
+		t.Fatal("want error when nothing can be rendered")
+	}
+	if len(*sent) != 0 {
+		t.Fatalf("model-invented entry sent: %q", *sent)
+	}
+	// The item was not marked: a later digest still carries it.
+	m.sections = nil
 	if err := a.Digest(context.Background(), store.Daily); err != nil {
 		t.Fatal(err)
 	}
-	if len(*sent) != 1 || strings.Contains((*sent)[0], "made up") || strings.Contains((*sent)[0], "Fake") {
-		t.Fatalf("model-invented entry rendered: %q", *sent)
+	if len(*sent) != 1 || !strings.Contains((*sent)[0], "https://e.com/1") {
+		t.Fatalf("item lost: %q", *sent)
+	}
+}
+
+func TestDigestKeepsLeftOutItems(t *testing.T) {
+	m := &fakeModel{scores: map[string]int{"A": 7, "B": 6}, sections: []llm.Section{
+		{Heading: "Tech", Entries: []llm.Entry{{Text: "about A", ItemIDs: []int64{1}}, {Text: " ", ItemIDs: []int64{2}}}},
+	}}
+	a, sent := newApp(t, m, []store.Item{item("1", "A"), item("2", "B")})
+	a.Poll(context.Background())
+	if err := a.Digest(context.Background(), store.Daily); err != nil {
+		t.Fatal(err)
+	}
+	if len(*sent) != 1 || strings.Contains((*sent)[0], "https://e.com/2") {
+		t.Fatalf("bad first digest: %q", *sent)
+	}
+	m.sections = nil
+	if err := a.Digest(context.Background(), store.Daily); err != nil {
+		t.Fatal(err)
+	}
+	if len(*sent) != 2 || !strings.Contains((*sent)[1], "https://e.com/2") || strings.Contains((*sent)[1], "https://e.com/1") {
+		t.Fatalf("left-out item not carried over: %q", *sent)
 	}
 }
 
