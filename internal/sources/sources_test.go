@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -299,5 +300,79 @@ func TestXFetchBudgetFailsClosed(t *testing.T) {
 	}
 	if calls != 0 {
 		t.Fatalf("X was called %d times despite an unreadable budget", calls)
+	}
+}
+
+type recAlarms struct{ raised, cleared []string }
+
+func (r *recAlarms) Raise(_ context.Context, key, _, _ string, _ time.Duration) {
+	r.raised = append(r.raised, key)
+}
+func (r *recAlarms) Clear(_ context.Context, key string) { r.cleared = append(r.cleared, key) }
+
+func TestXAlarms(t *testing.T) {
+	status := map[string]int{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s := status[r.URL.Path]; s != 0 {
+			http.Error(w, `{"title":"x"}`, s)
+			return
+		}
+		switch r.URL.Path {
+		case "/users/me":
+			fmt.Fprint(w, `{"data":{"id":"42"}}`)
+		case "/users/by":
+			fmt.Fprint(w, `{"data":[{"id":"7","username":"prot"}]}`)
+		default:
+			fmt.Fprint(w, `{"data":[]}`)
+		}
+	}))
+	defer srv.Close()
+	rec := &recAlarms{}
+	x := &X{Client: srv.Client(), BaseURL: srv.URL, MaxPerPoll: 10, MaxPerDay: 100, MinInterval: time.Hour,
+		Mentions: true, Accounts: []string{"prot"}, Alarms: rec}
+	kv := memKV{}
+	now := time.Date(2026, 11, 24, 10, 0, 0, 0, time.UTC)
+	poll := func() {
+		now = now.Add(2 * time.Hour)
+		rec.raised, rec.cleared = nil, nil
+		x.Fetch(context.Background(), kv, now)
+	}
+	has := func(list []string, k string) bool { return slices.Contains(list, k) }
+
+	status["/users/42/mentions"] = 402
+	poll()
+	if !has(rec.raised, AlarmXCredits) {
+		t.Fatalf("402 must raise the credits alarm: %v", rec.raised)
+	}
+	status["/users/42/mentions"] = 0
+	status["/users/7/tweets"] = 403 // protected account: not an auth problem
+	poll()
+	if has(rec.raised, AlarmXAuth) || !has(rec.cleared, AlarmXCredits) {
+		t.Fatalf("raised %v cleared %v", rec.raised, rec.cleared)
+	}
+	status["/users/7/tweets"] = 0
+	// One endpoint keeps failing while another works: raise, never clear in
+	// the same poll, or the alarm would flap and repeat every poll.
+	status["/users/42/mentions"] = 401
+	for range 2 {
+		poll()
+		if !has(rec.raised, AlarmXAuth) || has(rec.cleared, AlarmXAuth) {
+			t.Fatalf("401 next to a working feed: raised %v cleared %v", rec.raised, rec.cleared)
+		}
+	}
+	status["/users/42/mentions"] = 0
+	poll()
+	if !has(rec.cleared, AlarmXAuth) || has(rec.raised, AlarmXAuth) {
+		t.Fatalf("all feeds fine must clear the auth alarm: raised %v cleared %v", rec.raised, rec.cleared)
+	}
+	kv[kvXReads+now.Add(2*time.Hour).UTC().Format("2006-01-02")] = "98"
+	poll()
+	if !has(rec.raised, AlarmXDailyCap) {
+		t.Fatalf("used-up budget must raise the daily cap alarm: %v", rec.raised)
+	}
+	now = now.Add(24 * time.Hour) // next UTC day
+	poll()
+	if !has(rec.cleared, AlarmXDailyCap) {
+		t.Fatalf("new day must clear the daily cap alarm: %v", rec.cleared)
 	}
 }

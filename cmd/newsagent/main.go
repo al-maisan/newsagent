@@ -97,6 +97,7 @@ func run() error {
 			HomeTimeline:   cfg.X.HomeTimeline,
 			Mentions:       cfg.X.Mentions,
 			Accounts:       cfg.X.Accounts,
+			Alarms:         a,
 		}
 		a.Sources = append(a.Sources, app.Source{Name: "x", Fetch: func(ctx context.Context) ([]store.Item, error) {
 			return x.Fetch(ctx, st, time.Now())

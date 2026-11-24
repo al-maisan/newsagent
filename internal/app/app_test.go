@@ -341,3 +341,61 @@ func TestPollStopsAfterSkippedItems(t *testing.T) {
 		}
 	}
 }
+
+func TestUsageLimitAlarm(t *testing.T) {
+	limit := &llm.TransientError{Err: errors.New("claude cli: You've hit your 5-hour limit · resets 7:30am (UTC)"), UsageLimit: true}
+	m := &fakeModel{scoreErr: limit, scores: map[string]int{}}
+	a, sent := newApp(t, m, []store.Item{item("1", "A")})
+	clock := now
+	a.Now = func() time.Time { return clock }
+	alarms := func() int {
+		n := 0
+		for _, s := range *sent {
+			if strings.Contains(s, "Claude usage limit hit") {
+				n++
+			}
+		}
+		return n
+	}
+	a.Poll(context.Background())
+	if alarms() != 1 || !strings.Contains((*sent)[0], "resets 7:30am (UTC)") {
+		t.Fatalf("want one alarm with the reset time, got %q", *sent)
+	}
+	clock = clock.Add(15 * time.Minute)
+	a.Poll(context.Background())
+	if alarms() != 1 {
+		t.Fatalf("alarm repeated within %s: %q", limitRepeat, *sent)
+	}
+	clock = clock.Add(limitRepeat)
+	a.Poll(context.Background())
+	if alarms() != 2 {
+		t.Fatalf("want a reminder after %s, got %d alarms", limitRepeat, alarms())
+	}
+	// A working call ends the episode; the next hit alarms at once.
+	m.scoreErr = nil
+	clock = clock.Add(15 * time.Minute)
+	a.Store.Insert(context.Background(), []store.Item{item("2", "B")}, clock)
+	a.Poll(context.Background())
+	m.scoreErr = limit
+	a.Store.Insert(context.Background(), []store.Item{item("3", "C")}, clock)
+	clock = clock.Add(15 * time.Minute)
+	a.Poll(context.Background())
+	if alarms() != 3 {
+		t.Fatalf("want an alarm right after recovery, got %d", alarms())
+	}
+}
+
+func TestRaiseOncePerEpisode(t *testing.T) {
+	a, sent := newApp(t, &fakeModel{}, nil)
+	ctx := context.Background()
+	a.Raise(ctx, "k", "T", "d <b>", 0)
+	a.Raise(ctx, "k", "T", "d <b>", 0)
+	if len(*sent) != 1 || !strings.Contains((*sent)[0], "d &lt;b&gt;") {
+		t.Fatalf("want one escaped alarm, got %q", *sent)
+	}
+	a.Clear(ctx, "k")
+	a.Raise(ctx, "k", "T", "d", 0)
+	if len(*sent) != 2 {
+		t.Fatalf("want an alarm after Clear, got %q", *sent)
+	}
+}

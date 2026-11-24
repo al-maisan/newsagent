@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"html"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -49,7 +50,9 @@ const (
 	urgentWindow    = 24 * time.Hour
 	digestWindow    = 36 * time.Hour
 	digestMaxItems  = 80
-	chunkLimit      = 4000 // below telegram.MaxLen to leave headroom
+	chunkLimit      = 4000          // below telegram.MaxLen to leave headroom
+	limitRepeat     = 6 * time.Hour // reminder interval while the usage limit lasts
+	kvAlarm         = "alarm:"      // + key: when the alarm last went out
 	maxEntryRunes   = 600
 )
 
@@ -109,6 +112,7 @@ func (a *App) score(ctx context.Context, now time.Time) error {
 			ids[i] = it.ID
 		}
 		scores, err := a.Model.Score(ctx, items, reported)
+		a.usageLimitAlarm(ctx, err)
 		if err != nil {
 			if llm.IsTransient(err) {
 				// Counted separately, with a higher cap, so a batch that
@@ -179,6 +183,7 @@ func (a *App) Digest(ctx context.Context, kind store.DigestKind) error {
 		return nil
 	}
 	sections, err := a.Model.Digest(ctx, items)
+	a.usageLimitAlarm(ctx, err)
 	if err != nil {
 		return fmt.Errorf("digest: %w", err)
 	}
@@ -205,6 +210,60 @@ func (a *App) Digest(ctx context.Context, kind store.DigestKind) error {
 	}
 	slog.Info("digest sent", "items", len(ids), "left_out", len(items)-len(ids), "sections", len(sections))
 	return errors.Join(errs...)
+}
+
+// AlarmClaudeLimit is the alarm key for the Claude plan's usage limit.
+const AlarmClaudeLimit = "claude_usage_limit"
+
+// usageLimitAlarm raises the usage-limit alarm when a model call hit the
+// plan's limit and ends the episode when a call succeeded.
+func (a *App) usageLimitAlarm(ctx context.Context, err error) {
+	switch {
+	case err == nil:
+		a.Clear(ctx, AlarmClaudeLimit)
+	case llm.IsUsageLimit(err):
+		a.Raise(ctx, AlarmClaudeLimit, "Claude usage limit hit",
+			strings.TrimPrefix(err.Error(), "claude cli: ")+"\nScoring and digests pause until it resets; new items are kept and retried.", limitRepeat)
+	}
+}
+
+// Raise sends an alarm the first time a problem shows up, then again every
+// repeat while it lasts (repeat 0: once until Clear). Alarm problems are only
+// logged: they must never stop a run.
+func (a *App) Raise(ctx context.Context, key, title, detail string, repeat time.Duration) {
+	now := a.Now()
+	last, err := a.Store.Get(ctx, kvAlarm+key)
+	if err != nil {
+		slog.Warn("alarm: read state", "alarm", key, "err", err)
+		return
+	}
+	if last != "" {
+		ts, perr := strconv.ParseInt(last, 10, 64)
+		if repeat == 0 || perr == nil && now.Sub(time.Unix(ts, 0)) < repeat {
+			return
+		}
+	}
+	if err := a.Send(ctx, "⚠️ <b>"+esc(title)+"</b>\n"+esc(detail)); err != nil {
+		slog.Warn("alarm: send", "alarm", key, "err", err)
+		return
+	}
+	if err := a.Store.Set(ctx, kvAlarm+key, strconv.FormatInt(now.Unix(), 10)); err != nil {
+		slog.Warn("alarm: save state", "alarm", key, "err", err)
+	}
+	slog.Info("alarm sent", "alarm", key)
+}
+
+// Clear ends an alarm episode, so the next occurrence alarms at once.
+func (a *App) Clear(ctx context.Context, key string) {
+	last, err := a.Store.Get(ctx, kvAlarm+key)
+	if err != nil || last == "" {
+		return
+	}
+	if err := a.Store.Set(ctx, kvAlarm+key, ""); err != nil {
+		slog.Warn("alarm: clear state", "alarm", key, "err", err)
+		return
+	}
+	slog.Info("alarm cleared", "alarm", key)
 }
 
 func (a *App) renderUrgent(it store.Item) string {

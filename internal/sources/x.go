@@ -24,6 +24,22 @@ type KV interface {
 	DeleteBefore(ctx context.Context, prefix, bound string) error
 }
 
+// Alarms tells the reader about problems that stop a source. Raise sends an
+// alarm once, then again every repeat while the problem lasts (repeat 0:
+// once per episode); Clear ends the episode.
+type Alarms interface {
+	Raise(ctx context.Context, key, title, detail string, repeat time.Duration)
+	Clear(ctx context.Context, key string)
+}
+
+// Alarm keys of the X source.
+const (
+	AlarmXCredits  = "x_credits"
+	AlarmXAuth     = "x_auth"
+	AlarmXDailyCap = "x_daily_cap"
+	alarmRepeat    = 6 * time.Hour
+)
+
 // X reads, in this order: mentions of the authenticated user, new posts of
 // selected accounts, and the home timeline. X bills per post read, so reads
 // are capped per request and per UTC day; the order decides what gets the
@@ -39,6 +55,19 @@ type X struct {
 	Mentions       bool
 	Accounts       []string // usernames whose posts always reach the digest
 	HomeTimeline   bool
+	Alarms         Alarms // optional
+
+	seen *xSeen // what the requests of the current Fetch returned
+}
+
+// xSeen collects request outcomes during one Fetch. Alarms are decided once
+// at its end: one failing endpoint next to working ones must not raise and
+// clear the same alarm on every poll.
+type xSeen struct {
+	ok         bool // some request succeeded
+	credits    bool // some request got 402
+	authStatus int  // last auth failure (401, or 403 on own endpoints)
+	authBody   string
 }
 
 const (
@@ -93,6 +122,8 @@ func (b *budget) spend(ctx context.Context, n int) error {
 // is used up. Failing feeds are logged and skipped; an error is returned only
 // if every feed failed.
 func (x *X) Fetch(ctx context.Context, kv KV, now time.Time) ([]store.Item, error) {
+	x.seen = &xSeen{}
+	defer x.settleAlarms(ctx)
 	last, err := kv.Get(ctx, kvXLastPoll)
 	if err != nil {
 		return nil, fmt.Errorf("x last poll: %w", err)
@@ -121,8 +152,11 @@ func (x *X) Fetch(ctx context.Context, kv KV, now time.Time) ([]store.Item, erro
 	}
 	if b.left() < 5 { // the API's minimum max_results is 5
 		slog.Info("x daily read budget used up", "used", b.used, "max", x.MaxPerDay)
+		x.raise(ctx, AlarmXDailyCap, "X daily read cap reached",
+			fmt.Sprintf("newsagent has read %d of its %d posts for today (UTC day). X reads resume after 00:00 UTC.", b.used, x.MaxPerDay), 0)
 		return nil, nil
 	}
+	x.clear(ctx, AlarmXDailyCap)
 	uid, err := x.userID(ctx, kv)
 	if err != nil {
 		return nil, err
@@ -308,5 +342,51 @@ func (x *X) get(ctx context.Context, path string, q url.Values, v any) error {
 		u += "?" + q.Encode()
 	}
 	hdr := http.Header{"Authorization": {x.Auth.header(http.MethodGet, base, q)}}
-	return getJSON(ctx, x.Client, u, hdr, v)
+	err := getJSON(ctx, x.Client, u, hdr, v)
+	if s := x.seen; s != nil {
+		var he *HTTPError
+		switch {
+		case err == nil:
+			s.ok = true
+		case !errors.As(err, &he):
+		case he.Status == http.StatusPaymentRequired:
+			s.credits = true
+		// 403 on another account's posts (e.g. a protected account) is not
+		// an auth problem; on the user's own endpoints it is.
+		case he.Status == http.StatusUnauthorized || he.Status == http.StatusForbidden && !strings.HasSuffix(path, "/tweets"):
+			s.authStatus, s.authBody = he.Status, he.Body
+		}
+	}
+	return err
+}
+
+// settleAlarms raises or clears the X alarms from what this Fetch saw. A
+// Fetch without requests (too early, budget used up) changes nothing.
+func (x *X) settleAlarms(ctx context.Context) {
+	s := x.seen
+	x.seen = nil
+	if s.credits {
+		x.raise(ctx, AlarmXCredits, "X API credits used up",
+			"X answered 402 Payment Required: no X reads until you buy credits or raise the spend cap (console.x.com → Billing → Credits).", alarmRepeat)
+	} else if s.ok {
+		x.clear(ctx, AlarmXCredits)
+	}
+	if s.authStatus != 0 {
+		x.raise(ctx, AlarmXAuth, "X API access denied",
+			fmt.Sprintf("X answered %d: check the X keys in /etc/newsagent/secrets.env and the app's permissions on console.x.com. Details: %s", s.authStatus, s.authBody), alarmRepeat)
+	} else if s.ok {
+		x.clear(ctx, AlarmXAuth)
+	}
+}
+
+func (x *X) raise(ctx context.Context, key, title, detail string, repeat time.Duration) {
+	if x.Alarms != nil {
+		x.Alarms.Raise(ctx, key, title, detail, repeat)
+	}
+}
+
+func (x *X) clear(ctx context.Context, key string) {
+	if x.Alarms != nil {
+		x.Alarms.Clear(ctx, key)
+	}
 }

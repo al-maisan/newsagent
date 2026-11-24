@@ -196,10 +196,21 @@ Each entry: one or two plain sentences (max 40 words), no markdown, no URLs. Hea
 
 // TransientError marks failures worth retrying later without counting them
 // as a failed attempt (usage limits, overload, timeouts, CLI crashes).
-type TransientError struct{ Err error }
+type TransientError struct {
+	Err error
+	// UsageLimit is set when the Claude plan's usage limit was hit; Err then
+	// carries the CLI's message, which names the reset time.
+	UsageLimit bool
+}
 
 func (e *TransientError) Error() string { return e.Err.Error() }
 func (e *TransientError) Unwrap() error { return e.Err }
+
+// IsUsageLimit reports whether err means the plan's usage limit was hit.
+func IsUsageLimit(err error) bool {
+	var t *TransientError
+	return errors.As(err, &t) && t.UsageLimit
+}
 
 // IsTransient reports whether err is a TransientError.
 func IsTransient(err error) bool {
@@ -254,21 +265,29 @@ func (c *Claude) call(ctx context.Context, system string, payload any, schema js
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	runErr := cmd.Run()
 	if ctx.Err() != nil {
-		return &TransientError{fmt.Errorf("claude cli: %w", ctx.Err())}
+		return &TransientError{Err: fmt.Errorf("claude cli: %w", ctx.Err())}
 	}
 	if cctx.Err() != nil {
-		return &TransientError{fmt.Errorf("claude cli: no answer within %s", timeout)}
+		return &TransientError{Err: fmt.Errorf("claude cli: no answer within %s", timeout)}
 	}
 	var res cliResult
 	if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
 		// No result object: the CLI failed before talking to the model.
-		return &TransientError{fmt.Errorf("claude cli: %v: %s", runErr, clip(strings.TrimSpace(stderr.String()), 300))}
+		return &TransientError{Err: fmt.Errorf("claude cli: %v: %s", runErr, clip(strings.TrimSpace(stderr.String()), 300))}
 	}
 	if res.IsError || res.Subtype != "success" {
 		err := fmt.Errorf("claude cli: %s: %s", res.Subtype, clip(res.Result, 300))
-		// Usage limits reset after a few hours; keep the items for later.
-		if s := res.APIErrorStatus; (s != nil && (*s == 429 || *s >= 500)) || strings.Contains(strings.ToLower(res.Result), "limit") {
-			return &TransientError{err}
+		// Plan usage limits reset after hours; keep the items for later. The
+		// CLI reports them as e.g. "You've hit your 5-hour limit · resets
+		// 7:30am (UTC)" or "…weekly limit. It resets …", so the message is the
+		// most useful error text. Short API rate limits ("rate_limit_error")
+		// also say "limit" but never "resets": they are only transient.
+		lower := strings.ToLower(res.Result)
+		if strings.Contains(lower, "limit") && strings.Contains(lower, "resets") {
+			return &TransientError{Err: fmt.Errorf("claude cli: %s", clip(strings.TrimSpace(res.Result), 300)), UsageLimit: true}
+		}
+		if s := res.APIErrorStatus; s != nil && (*s == 429 || *s >= 500) || strings.Contains(lower, "limit") {
+			return &TransientError{Err: err}
 		}
 		return err
 	}
