@@ -5,7 +5,7 @@ Watches tech news sites and your X home timeline, and keeps you up to date on Te
 - **Sources:** Hacker News top stories, any RSS/Atom feed, and X (official API): your mentions, the posts of accounts you pick, and your home timeline.
 - **Ranking:** Claude rates every new item 0–10 against your interests (set in the config). It runs through the Claude Code CLI (`claude -p`) with your Claude subscription, so there are no API credit costs. Usage counts against your plan's limits.
 - **Urgent pings:** items scoring 9 or higher are sent right away, at most 3 per poll, with repeats of the same story skipped.
-- **Digests:** twice a day, the items scoring 6 or higher are grouped into short themed sections.
+- **Digests:** twice a day, the items scoring 6 or higher are grouped into short themed sections. An optional hourly mode adds short updates in between (see the table below).
 - **X priorities:** every mention of you is pinged right away. Every post from the accounts in `x.accounts` is in the digest, and it's pinged when it scores 9 or higher. This is the official-API version of X's notification bell.
 
 ## How it works

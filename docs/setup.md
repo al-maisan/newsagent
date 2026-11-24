@@ -70,7 +70,7 @@ Turn it off again with `sudo systemctl disable --now newsagent-hourly.timer`.
 
 ## Operations
 
-- Logs: `journalctl -u newsagent-poll -u newsagent-digest -f`
+- Logs: `journalctl -u newsagent-poll -u newsagent-digest -u newsagent-hourly -f`
 - Send a digest now: `sudo systemctl start newsagent-digest.service`
 - Data: `/var/lib/newsagent/newsagent.db` (SQLite; items older than 30 days are pruned)
 - Renew `CLAUDE_CODE_OAUTH_TOKEN` yearly (`claude setup-token`). Until then, polls log `claude cli` errors.
