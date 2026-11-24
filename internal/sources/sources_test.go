@@ -376,3 +376,34 @@ func TestXAlarms(t *testing.T) {
 		t.Fatalf("new day must clear the daily cap alarm: %v", rec.cleared)
 	}
 }
+
+// lastPollFailKV fails only when saving the last poll time.
+type lastPollFailKV struct{ memKV }
+
+func (k lastPollFailKV) Set(ctx context.Context, key, v string) error {
+	if key == kvXLastPoll {
+		return errors.New("disk full")
+	}
+	return k.memKV.Set(ctx, key, v)
+}
+
+func TestXFetchKeepsItemsWhenLastPollSaveFails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/users/me":
+			fmt.Fprint(w, `{"data":{"id":"42"}}`)
+		default:
+			fmt.Fprint(w, `{"data":[{"id":"900","text":"hi","author_id":"1","created_at":"2026-11-24T09:00:00Z"}],"includes":{"users":[{"id":"1","username":"bob"}]},"meta":{"newest_id":"900"}}`)
+		}
+	}))
+	defer srv.Close()
+	x := &X{Client: srv.Client(), BaseURL: srv.URL, MaxPerPoll: 10, MaxPerDay: 100, MinInterval: time.Hour, HomeTimeline: true}
+	kv := lastPollFailKV{memKV{}}
+	items, err := x.Fetch(context.Background(), kv, time.Date(2026, 11, 24, 10, 0, 0, 0, time.UTC))
+	if err != nil || len(items) != 1 {
+		t.Fatalf("billed posts dropped: items=%v err=%v", items, err)
+	}
+	if kv.memKV[kvXSinceID] != "900" {
+		t.Fatalf("since id not saved: %v", kv.memKV)
+	}
+}
