@@ -283,15 +283,27 @@ const (
 	Hourly
 )
 
-// PendingDigest returns digest items and items scoring at least minScore
-// that the given kind of digest has not carried yet, digest items first.
-func (s *Store) PendingDigest(ctx context.Context, kind DigestKind, minScore int, since time.Time, limit int) ([]Item, error) {
+// PendingDigest returns the items for the next digest of the given kind:
+// at most maxDigest digest items (priority "digest", always shown), then the
+// best-scored items scoring at least minScore, up to limit in total. Capping
+// digest items keeps a few busy accounts from crowding out all other news;
+// the ones over the cap stay pending for the next digest.
+func (s *Store) PendingDigest(ctx context.Context, kind DigestKind, minScore int, since time.Time, limit, maxDigest int) ([]Item, error) {
 	notSent := "digest_sent_at IS NULL"
 	if kind == Hourly {
 		notSent += " AND hourly_sent_at IS NULL"
 	}
-	return s.query(ctx, `WHERE (priority = 'digest' OR score >= ?) AND `+notSent+` AND fetched_at > ?
-		ORDER BY priority = 'digest' DESC, score DESC, id LIMIT ?`, minScore, since.Unix(), limit)
+	digest, err := s.query(ctx, `WHERE priority = 'digest' AND `+notSent+` AND fetched_at > ?
+		ORDER BY score DESC, id LIMIT ?`, since.Unix(), min(maxDigest, limit))
+	if err != nil {
+		return nil, err
+	}
+	rest, err := s.query(ctx, `WHERE priority != 'digest' AND score >= ? AND `+notSent+` AND fetched_at > ?
+		ORDER BY score DESC, id LIMIT ?`, minScore, since.Unix(), limit-len(digest))
+	if err != nil {
+		return nil, err
+	}
+	return append(digest, rest...), nil
 }
 
 // MarkDigestSent records that items went out in a digest of the given kind.
