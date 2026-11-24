@@ -159,6 +159,7 @@ Reader's interests:
 ` + c.Interests + `
 
 Group the items into 2-6 themed sections, most important first. Merge items about the same story into one entry listing all their ids.
+Items with "must_include": true come from accounts the reader follows closely: include every one of them, even if minor.
 Each entry: one or two plain sentences (max 40 words), no markdown, no URLs. Headings: 1-4 words.
 ` + untrusted
 
@@ -168,10 +169,11 @@ Each entry: one or two plain sentences (max 40 words), no markdown, no URLs. Hea
 		Score   int    `json:"score"`
 		Title   string `json:"title"`
 		Summary string `json:"summary"`
+		Must    bool   `json:"must_include,omitempty"`
 	}
 	var payload []in
 	for _, it := range items {
-		payload = append(payload, in{it.ID, it.Source, it.Score, it.Title, it.Summary})
+		payload = append(payload, in{it.ID, it.Source, it.Score, it.Title, it.Summary, it.Priority == store.PriorityDigest})
 	}
 	var out struct {
 		Sections []Section `json:"sections"`

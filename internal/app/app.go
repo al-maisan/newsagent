@@ -184,7 +184,11 @@ func (a *App) Digest(ctx context.Context) error {
 
 func (a *App) renderUrgent(it store.Item) string {
 	var b strings.Builder
-	b.WriteString("⚡ <b>" + esc(it.Title) + "</b>\n")
+	icon := "⚡"
+	if it.Priority == store.PriorityPing {
+		icon = "💬"
+	}
+	b.WriteString(icon + " <b>" + esc(it.Title) + "</b>\n")
 	if it.Summary != "" {
 		b.WriteString(esc(it.Summary) + "\n")
 	}
@@ -199,6 +203,7 @@ func (a *App) renderDigest(sections []llm.Section, items []store.Item, now time.
 	}
 	var b strings.Builder
 	b.WriteString("📰 <b>News digest</b> · " + esc(now.In(a.Loc).Format("Mon 2 Jan 15:04")) + "\n")
+	used := map[int64]bool{}
 	for _, s := range sections {
 		var lines []string
 		for _, e := range s.Entries {
@@ -207,6 +212,7 @@ func (a *App) renderDigest(sections []llm.Section, items []store.Item, now time.
 			for _, id := range e.ItemIDs {
 				if it, ok := byID[id]; ok && !seen[id] {
 					seen[id] = true
+					used[id] = true
 					refs = append(refs, a.links(it))
 				}
 			}
@@ -219,6 +225,16 @@ func (a *App) renderDigest(sections []llm.Section, items []store.Item, now time.
 		if len(lines) > 0 {
 			b.WriteString("\n<b>" + esc(clip(strings.TrimSpace(s.Heading), 60)) + "</b>\n" + strings.Join(lines, "\n") + "\n")
 		}
+	}
+	// Digest items must always appear, even if the model left them out.
+	var missed []string
+	for _, it := range items {
+		if it.Priority == store.PriorityDigest && !used[it.ID] {
+			missed = append(missed, "• "+esc(clip(it.Title, 200))+" "+a.links(it))
+		}
+	}
+	if len(missed) > 0 {
+		b.WriteString("\n<b>From accounts you follow</b>\n" + strings.Join(missed, "\n") + "\n")
 	}
 	return b.String()
 }

@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -67,5 +69,60 @@ func TestStore(t *testing.T) {
 
 	if n, err := s.Prune(ctx, now.Add(time.Second)); err != nil || n != 2 {
 		t.Fatalf("prune: %d %v", n, err)
+	}
+}
+
+func TestPriority(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	now := time.Date(2026, 11, 24, 10, 0, 0, 0, time.UTC)
+	since := now.Add(-time.Hour)
+	ins := func(prio string) {
+		if _, err := s.Insert(ctx, []Item{{Source: "x", ExtID: "1", Title: "p", URL: "https://x/1", Priority: prio}}, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ins("")
+	ins(PriorityPing)   // upgraded
+	ins(PriorityDigest) // must not downgrade
+	urg, _ := s.PendingUrgent(ctx, 9, since, 5)
+	if len(urg) != 1 || urg[0].Priority != PriorityPing {
+		t.Fatalf("unscored ping item must be pending: %+v", urg)
+	}
+	if dig, _ := s.PendingDigest(ctx, 6, since, 5); len(dig) != 0 {
+		t.Fatalf("ping item must not be in digest: %+v", dig)
+	}
+	s.Insert(ctx, []Item{{Source: "x", ExtID: "2", Title: "d", URL: "https://x/2", Priority: PriorityDigest}}, now)
+	if dig, _ := s.PendingDigest(ctx, 6, since, 5); len(dig) != 1 || dig[0].ExtID != "2" {
+		t.Fatalf("unscored digest item must be in digest: %+v", dig)
+	}
+}
+
+func TestMigrateAddsPriority(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := strings.Replace(schema, "priority       TEXT    NOT NULL DEFAULT '',\n", "", 1)
+	if old == schema {
+		t.Fatal("test setup: priority column not found in schema")
+	}
+	if _, err := db.Exec(old); err != nil {
+		t.Fatal(err)
+	}
+	db.Exec(`INSERT INTO items (source, ext_id, title, url, fetched_at) VALUES ('a', '1', 't', 'https://e', 1)`)
+	db.Close()
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.Insert(context.Background(), []Item{{Source: "a", ExtID: "1", Title: "t", URL: "https://e", Priority: PriorityPing}}, time.Now()); err != nil {
+		t.Fatalf("insert after migration: %v", err)
 	}
 }

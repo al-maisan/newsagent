@@ -37,7 +37,12 @@
     "max_posts_per_poll": 25,
     "max_posts_per_day": 200,
     "min_interval": "1h",
-    "exclude_replies": true
+    "exclude_replies": true,
+    "mentions": true,
+    "accounts": [
+      "some_account"
+    ],
+    "home_timeline": true
   },
   "llm": {
     "claude_path": "claude",

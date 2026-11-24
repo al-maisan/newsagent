@@ -25,7 +25,18 @@ type Item struct {
 	Published  time.Time
 	Score      int
 	Summary    string
+	Priority   string // "", PriorityDigest or PriorityPing
 }
+
+// Item priorities: digest items always reach the digest, ping items are
+// always sent right away.
+const (
+	PriorityDigest = "digest"
+	PriorityPing   = "ping"
+)
+
+// rank orders priorities so an item never loses one it already has.
+const rank = `CASE %s WHEN 'ping' THEN 2 WHEN 'digest' THEN 1 ELSE 0 END`
 
 // Score is the model's rating of one item.
 type Score struct {
@@ -53,6 +64,7 @@ CREATE TABLE IF NOT EXISTS items (
 	score_attempts INTEGER NOT NULL DEFAULT 0,
 	urgent_sent_at INTEGER,
 	digest_sent_at INTEGER,
+	priority       TEXT    NOT NULL DEFAULT '',
 	UNIQUE (source, ext_id)
 );
 CREATE INDEX IF NOT EXISTS items_fetched ON items (fetched_at);
@@ -79,13 +91,32 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("init schema: %w", err)
 	}
+	if err := migrate(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate: %w", err)
+	}
 	return &Store{db: db}, nil
+}
+
+// migrate adds columns that databases created by older versions lack.
+func migrate(db *sql.DB) error {
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('items') WHERE name = 'priority'`).Scan(&n); err != nil {
+		return err
+	}
+	if n == 0 {
+		_, err := db.Exec(`ALTER TABLE items ADD COLUMN priority TEXT NOT NULL DEFAULT ''`)
+		return err
+	}
+	return nil
 }
 
 // Close closes the database.
 func (s *Store) Close() error { return s.db.Close() }
 
 // Insert stores items that are not known yet and returns how many were new.
+// A known item gets the higher of its old and new priority, so a post seen
+// in the home timeline first still counts once it shows up as a mention.
 func (s *Store) Insert(ctx context.Context, items []Item, now time.Time) (int, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -93,16 +124,22 @@ func (s *Store) Insert(ctx context.Context, items []Item, now time.Time) (int, e
 	}
 	defer tx.Rollback()
 	stmt, err := tx.PrepareContext(ctx, `INSERT OR IGNORE INTO items
-		(source, ext_id, title, url, discuss_url, author, text, published_at, fetched_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		(source, ext_id, title, url, discuss_url, author, text, published_at, fetched_at, priority)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return 0, err
 	}
 	defer stmt.Close()
+	upd, err := tx.PrepareContext(ctx, `UPDATE items SET priority = ?
+		WHERE source = ? AND ext_id = ? AND `+fmt.Sprintf(rank, "priority")+` < `+fmt.Sprintf(rank, "?"))
+	if err != nil {
+		return 0, err
+	}
+	defer upd.Close()
 	n := 0
 	for _, it := range items {
 		res, err := stmt.ExecContext(ctx, it.Source, it.ExtID, it.Title, it.URL, it.DiscussURL,
-			it.Author, it.Text, unix(it.Published), now.Unix())
+			it.Author, it.Text, unix(it.Published), now.Unix(), it.Priority)
 		if err != nil {
 			return 0, fmt.Errorf("insert %s/%s: %w", it.Source, it.ExtID, err)
 		}
@@ -111,6 +148,11 @@ func (s *Store) Insert(ctx context.Context, items []Item, now time.Time) (int, e
 			return 0, err
 		}
 		n += int(c)
+		if c == 0 && it.Priority != "" {
+			if _, err := upd.ExecContext(ctx, it.Priority, it.Source, it.ExtID, it.Priority); err != nil {
+				return 0, fmt.Errorf("update priority %s/%s: %w", it.Source, it.ExtID, err)
+			}
+		}
 	}
 	return n, tx.Commit()
 }
@@ -143,10 +185,12 @@ func (s *Store) SaveScores(ctx context.Context, attempted []int64, scores []Scor
 	return tx.Commit()
 }
 
-// PendingUrgent returns high-scoring, non-duplicate items not pinged yet.
+// PendingUrgent returns ping items and high-scoring, non-duplicate items
+// not sent yet, ping items first.
 func (s *Store) PendingUrgent(ctx context.Context, minScore int, since time.Time, limit int) ([]Item, error) {
-	return s.query(ctx, `WHERE score >= ? AND duplicate = 0 AND urgent_sent_at IS NULL AND fetched_at > ?
-		ORDER BY score DESC, id LIMIT ?`, minScore, since.Unix(), limit)
+	return s.query(ctx, `WHERE (priority = 'ping' OR (score >= ? AND duplicate = 0))
+		AND urgent_sent_at IS NULL AND fetched_at > ?
+		ORDER BY priority = 'ping' DESC, score DESC, id LIMIT ?`, minScore, since.Unix(), limit)
 }
 
 // RecentUrgentTitles returns titles of items pinged after since, so the model
@@ -174,10 +218,11 @@ func (s *Store) MarkUrgentSent(ctx context.Context, id int64, now time.Time) err
 	return err
 }
 
-// PendingDigest returns scored items not yet included in a digest.
+// PendingDigest returns digest items and items scoring at least minScore
+// that were not in a digest yet, digest items first.
 func (s *Store) PendingDigest(ctx context.Context, minScore int, since time.Time, limit int) ([]Item, error) {
-	return s.query(ctx, `WHERE score >= ? AND digest_sent_at IS NULL AND fetched_at > ?
-		ORDER BY score DESC, id LIMIT ?`, minScore, since.Unix(), limit)
+	return s.query(ctx, `WHERE (priority = 'digest' OR score >= ?) AND digest_sent_at IS NULL AND fetched_at > ?
+		ORDER BY priority = 'digest' DESC, score DESC, id LIMIT ?`, minScore, since.Unix(), limit)
 }
 
 // MarkDigestSent records that items went out in a digest.
@@ -223,7 +268,7 @@ func (s *Store) Set(ctx context.Context, key, value string) error {
 
 func (s *Store) query(ctx context.Context, where string, args ...any) ([]Item, error) {
 	q := `SELECT id, source, ext_id, title, url, discuss_url, author, text, published_at,
-		COALESCE(score, 0), summary FROM items ` + strings.TrimSpace(where)
+		COALESCE(score, 0), summary, priority FROM items ` + strings.TrimSpace(where)
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
@@ -234,7 +279,7 @@ func (s *Store) query(ctx context.Context, where string, args ...any) ([]Item, e
 		var it Item
 		var pub int64
 		if err := rows.Scan(&it.ID, &it.Source, &it.ExtID, &it.Title, &it.URL, &it.DiscussURL,
-			&it.Author, &it.Text, &pub, &it.Score, &it.Summary); err != nil {
+			&it.Author, &it.Text, &pub, &it.Score, &it.Summary, &it.Priority); err != nil {
 			return nil, err
 		}
 		if pub > 0 {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -48,6 +49,9 @@ type Config struct {
 		MaxPerDay      int      `json:"max_posts_per_day"`
 		MinInterval    Duration `json:"min_interval"`
 		ExcludeReplies bool     `json:"exclude_replies"`
+		HomeTimeline   bool     `json:"home_timeline"`
+		Mentions       bool     `json:"mentions"`
+		Accounts       []string `json:"accounts"`
 	} `json:"x"`
 	LLM struct {
 		ClaudePath   string `json:"claude_path"`
@@ -79,6 +83,8 @@ type Secrets struct {
 	XAccessSecret    string
 }
 
+var xUsername = regexp.MustCompile(`^[A-Za-z0-9_]{1,15}$`)
+
 var efforts = map[string]bool{"low": true, "medium": true, "high": true, "xhigh": true, "max": true}
 
 // Load reads path, applies defaults, reads secrets and validates everything.
@@ -95,6 +101,7 @@ func Load(path string, getenv func(string) string) (*Config, error) {
 	c.X.MaxPerPoll = 25
 	c.X.MaxPerDay = 200
 	c.X.MinInterval = Duration(time.Hour)
+	c.X.HomeTimeline = true
 	c.LLM.ClaudePath = "claude"
 	c.LLM.HomeDir = "/var/lib/newsagent"
 	c.LLM.Model = "claude-opus-5-5"
@@ -143,6 +150,11 @@ func (c *Config) validate() error {
 		check(c.X.MaxPerPoll >= 5 && c.X.MaxPerPoll <= 100, "x.max_posts_per_poll must be 5..100")
 		check(c.X.MaxPerDay >= c.X.MaxPerPoll, "x.max_posts_per_day must be >= x.max_posts_per_poll")
 		check(c.X.MinInterval > 0, "x.min_interval must be > 0")
+		check(c.X.HomeTimeline || c.X.Mentions || len(c.X.Accounts) > 0, "x is enabled but home_timeline, mentions and accounts are all off")
+		check(len(c.X.Accounts) <= 100, "x.accounts: at most 100")
+		for _, a := range c.X.Accounts {
+			check(xUsername.MatchString(a), fmt.Sprintf("x.accounts: %q is not a valid username (no @)", a))
+		}
 		s := c.Secrets
 		check(s.XConsumerKey != "" && s.XConsumerSecret != "" && s.XAccessToken != "" && s.XAccessSecret != "",
 			"x is enabled but X_CONSUMER_KEY, X_CONSUMER_SECRET, X_ACCESS_TOKEN or X_ACCESS_TOKEN_SECRET is missing")

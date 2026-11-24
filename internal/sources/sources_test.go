@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/al-maisan/newsagent/internal/store"
 )
 
 // Test vector from X's "Creating a signature" documentation.
@@ -133,7 +135,7 @@ func TestXFetch(t *testing.T) {
 	}))
 	defer srv.Close()
 	x := &X{Client: srv.Client(), BaseURL: srv.URL, Auth: OAuth1{"a", "b", "c", "d"},
-		MaxPerPoll: 50, MaxPerDay: 60, MinInterval: 30 * time.Minute, ExcludeReplies: true}
+		MaxPerPoll: 50, MaxPerDay: 60, MinInterval: 30 * time.Minute, ExcludeReplies: true, HomeTimeline: true}
 	kv := memKV{}
 	now := time.Date(2026, 11, 23, 10, 0, 0, 0, time.UTC)
 
@@ -167,5 +169,70 @@ func TestXFetch(t *testing.T) {
 	kv[kvXLastPoll] = "0"
 	if items, _ := x.Fetch(context.Background(), kv, now.Add(time.Hour)); items != nil || len(calls) != 3 {
 		t.Fatalf("polled over budget")
+	}
+}
+
+func TestXFetchMentionsAndAccounts(t *testing.T) {
+	var calls []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.URL.Path+"?"+r.URL.RawQuery)
+		post := func(id, author, user string) string {
+			return `{"data":[{"id":"` + id + `","text":"t","author_id":"` + author + `"}],
+				"includes":{"users":[{"id":"` + author + `","username":"` + user + `"}]},"meta":{"newest_id":"` + id + `"}}`
+		}
+		switch r.URL.Path {
+		case "/users/me":
+			fmt.Fprint(w, `{"data":{"id":"42"}}`)
+		case "/users/by":
+			fmt.Fprint(w, `{"data":[{"id":"7","username":"ESRtweet"}]}`)
+		case "/users/42/mentions":
+			fmt.Fprint(w, post("100", "9", "fan"))
+		case "/users/7/tweets":
+			fmt.Fprint(w, post("200", "7", "ESRtweet"))
+		default:
+			http.Error(w, "unexpected", 500)
+		}
+	}))
+	defer srv.Close()
+	x := &X{Client: srv.Client(), BaseURL: srv.URL, Auth: OAuth1{"a", "b", "c", "d"},
+		MaxPerPoll: 20, MaxPerDay: 100, MinInterval: time.Hour, Mentions: true, Accounts: []string{"esrtweet", "ghost"}}
+	kv := memKV{}
+	now := time.Date(2026, 11, 24, 10, 0, 0, 0, time.UTC)
+	items, err := x.Fetch(context.Background(), kv, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 || items[0].Priority != store.PriorityPing || items[1].Priority != store.PriorityDigest {
+		t.Fatalf("bad items %+v", items)
+	}
+	if !strings.Contains(calls[1], "start_time=2026-11-23T10") {
+		t.Fatalf("first read must start 24h back: %q", calls[1])
+	}
+	if kv[kvXSince+"mentions"] != "100" || kv[kvXSince+"7"] != "200" || kv[kvXUID+"esrtweet"] != "7" || kv[kvXReads+"2026-11-24"] != "2" {
+		t.Fatalf("state not saved: %v", kv)
+	}
+	// Next poll: cached id, no lookup; since ids used.
+	calls = nil
+	if _, err := x.Fetch(context.Background(), kv, now.Add(2*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(calls, "\n")
+	if strings.Contains(joined, "/users/by") || !strings.Contains(joined, "since_id=100") || !strings.Contains(joined, "since_id=200") {
+		t.Fatalf("bad follow-up calls:\n%s", joined)
+	}
+}
+
+func TestXFetchAllFeedsFail(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/users/me" {
+			fmt.Fprint(w, `{"data":{"id":"42"}}`)
+			return
+		}
+		http.Error(w, `{"title":"Payment Required"}`, 402)
+	}))
+	defer srv.Close()
+	x := &X{Client: srv.Client(), BaseURL: srv.URL, MaxPerPoll: 20, MaxPerDay: 100, MinInterval: time.Hour, Mentions: true, HomeTimeline: true}
+	if _, err := x.Fetch(context.Background(), memKV{}, time.Now()); err == nil || !strings.Contains(err.Error(), "402") {
+		t.Fatalf("want 402 error, got %v", err)
 	}
 }
