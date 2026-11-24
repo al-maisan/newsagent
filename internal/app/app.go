@@ -129,7 +129,9 @@ func (a *App) score(ctx context.Context, now time.Time) error {
 			return fmt.Errorf("save scores: %w", err)
 		}
 		slog.Info("scored", "items", len(items), "scored", len(scores))
-		if len(items) < scoreBatch {
+		// Items the model skipped would come back first in the next batch;
+		// leave them for the next poll instead of using up their attempts now.
+		if len(items) < scoreBatch || len(scores) < len(items) {
 			return nil
 		}
 	}

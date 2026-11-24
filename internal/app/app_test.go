@@ -15,7 +15,8 @@ import (
 )
 
 type fakeModel struct {
-	scores    map[string]int // title -> score
+	scores    map[string]int  // title -> score
+	skip      map[string]bool // titles Score leaves out
 	scoreErr  error
 	sections  []llm.Section
 	scoreCall int
@@ -30,7 +31,9 @@ func (f *fakeModel) Score(_ context.Context, items []store.Item, reported []stri
 	}
 	var out []store.Score
 	for _, it := range items {
-		out = append(out, store.Score{ID: it.ID, Score: f.scores[it.Title], Summary: "sum " + it.Title})
+		if !f.skip[it.Title] {
+			out = append(out, store.Score{ID: it.ID, Score: f.scores[it.Title], Summary: "sum " + it.Title})
+		}
 	}
 	return out, nil
 }
@@ -319,5 +322,22 @@ func TestDigestRejectedPartSkipped(t *testing.T) {
 	}
 	if len(*sent) != 0 {
 		t.Fatalf("rejected digest retried: %q", *sent)
+	}
+}
+
+func TestPollStopsAfterSkippedItems(t *testing.T) {
+	m := &fakeModel{skip: map[string]bool{"skipped": true}}
+	items := []store.Item{item("0", "skipped")}
+	for i := 1; i <= scoreBatch; i++ {
+		items = append(items, item(fmt.Sprint(i), fmt.Sprint("minor ", i)))
+	}
+	a, _ := newApp(t, m, items)
+	for poll := 1; poll <= store.MaxScoreAttempts; poll++ {
+		a.Poll(context.Background())
+		// One score call per poll: a batch with a skipped item ends the loop,
+		// so the skipped item is not retried within the same poll.
+		if m.scoreCall != poll {
+			t.Fatalf("poll %d: want %d score calls in total, got %d", poll, poll, m.scoreCall)
+		}
 	}
 }
