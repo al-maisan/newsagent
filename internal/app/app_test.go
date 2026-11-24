@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -18,10 +19,12 @@ type fakeModel struct {
 	scoreErr  error
 	sections  []llm.Section
 	scoreCall int
+	reported  [][]string // alreadyReported per Score call
 }
 
-func (f *fakeModel) Score(_ context.Context, items []store.Item, _ []string) ([]store.Score, error) {
+func (f *fakeModel) Score(_ context.Context, items []store.Item, reported []string) ([]store.Score, error) {
 	f.scoreCall++
+	f.reported = append(f.reported, reported)
 	if f.scoreErr != nil {
 		return nil, f.scoreErr
 	}
@@ -216,6 +219,21 @@ func TestDigestKeepsFollowedAccounts(t *testing.T) {
 	msg := (*sent)[len(*sent)-1]
 	if !strings.Contains(msg, "From accounts you follow") || !strings.Contains(msg, "@esr: low") {
 		t.Fatalf("followed account dropped: %q", msg)
+	}
+}
+
+func TestPollLaterBatchSeesPendingUrgent(t *testing.T) {
+	m := &fakeModel{scores: map[string]int{"Huge": 10}}
+	items := []store.Item{item("0", "Huge")}
+	for i := 1; i <= scoreBatch; i++ {
+		items = append(items, item(fmt.Sprint(i), fmt.Sprint("minor ", i)))
+	}
+	a, _ := newApp(t, m, items)
+	if err := a.Poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if m.scoreCall != 2 || len(m.reported[0]) != 0 || len(m.reported[1]) != 1 || m.reported[1][0] != "Huge" {
+		t.Fatalf("second batch must see the pending ping: calls=%d reported=%q", m.scoreCall, m.reported)
 	}
 }
 
