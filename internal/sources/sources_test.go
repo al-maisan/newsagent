@@ -237,6 +237,22 @@ func TestXFetchAllFeedsFail(t *testing.T) {
 	}
 }
 
+func TestParseFeedLenient(t *testing.T) {
+	cases := map[string]string{
+		"html entity": `<rss><channel><item><title>A &rsquo; B</title><link>https://a.com/1</link></item></channel></rss>`,
+		"latin1":      "<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><rss><channel><item><title>A \x92 B</title><link>https://a.com/1</link></item></channel></rss>",
+	}
+	for name, body := range cases {
+		items, err := ParseFeed("f", []byte(body))
+		if err != nil || len(items) != 1 || items[0].Title != "A ’ B" {
+			t.Errorf("%s: got %+v, %v", name, items, err)
+		}
+	}
+	if _, err := ParseFeed("f", []byte(`<?xml version="1.0" encoding="x-bogus"?><rss></rss>`)); err == nil {
+		t.Error("unknown charset: want error")
+	}
+}
+
 func TestPlain(t *testing.T) {
 	cases := map[string]string{
 		"<p>It&#8217;s &mdash; ok</p>":   "It’s — ok",
