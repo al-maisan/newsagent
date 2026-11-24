@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/al-maisan/newsagent/internal/store"
 )
@@ -112,5 +113,25 @@ func TestCallErrors(t *testing.T) {
 	}
 	if IsTransient(errors.New("x")) {
 		t.Error("plain error must not be transient")
+	}
+}
+
+func TestCallTimeout(t *testing.T) {
+	waitDelay = 100 * time.Millisecond
+	t.Cleanup(func() { waitDelay = 5 * time.Second })
+	dir := t.TempDir()
+	// The child sleep keeps stdout open after the shell is killed.
+	bin := filepath.Join(dir, "claude")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\ncat >/dev/null\nsleep 30\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	c := &Claude{Path: bin, HomeDir: dir, Model: "m", DigestEffort: "low", Timeout: 200 * time.Millisecond}
+	start := time.Now()
+	_, err := c.Digest(context.Background(), []store.Item{{ID: 1}})
+	if err == nil || !IsTransient(err) || !strings.Contains(err.Error(), "no answer within") {
+		t.Fatalf("want transient timeout error, got %v", err)
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Fatalf("timeout took %s", d)
 	}
 }
