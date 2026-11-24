@@ -54,6 +54,7 @@ const (
 	limitRepeat     = 6 * time.Hour // reminder interval while the usage limit lasts
 	kvAlarm         = "alarm:"      // + key: when the alarm last went out
 	maxEntryRunes   = 600
+	maxClockSkew    = 24 * time.Hour // publish dates later than now+this are ignored
 )
 
 // Poll fetches all sources, scores new items and sends urgent pings.
@@ -70,6 +71,12 @@ func (a *App) Poll(ctx context.Context) error {
 		}
 		fresh := items[:0]
 		for _, it := range items {
+			// A date far in the future is wrong; treat the item as undated,
+			// so it is kept as long as undated items and not seen as new
+			// again after pruning.
+			if it.Published.After(now.Add(maxClockSkew)) {
+				it.Published = time.Time{}
+			}
 			if it.Published.IsZero() || now.Sub(it.Published) <= a.MaxAge {
 				fresh = append(fresh, it)
 			}
