@@ -92,14 +92,28 @@ func (b *budget) spend(ctx context.Context, n int) error {
 // is used up. Failing feeds are logged and skipped; an error is returned only
 // if every feed failed.
 func (x *X) Fetch(ctx context.Context, kv KV, now time.Time) ([]store.Item, error) {
-	if last, _ := kv.Get(ctx, kvXLastPoll); last != "" {
-		if ts, err := strconv.ParseInt(last, 10, 64); err == nil && now.Sub(time.Unix(ts, 0)) < x.MinInterval {
+	last, err := kv.Get(ctx, kvXLastPoll)
+	if err != nil {
+		return nil, fmt.Errorf("x last poll: %w", err)
+	}
+	if last != "" {
+		// A bad value only costs one early read; the daily budget still holds.
+		if ts, err := strconv.ParseInt(last, 10, 64); err != nil {
+			slog.Warn("x last poll unreadable, ignoring it", "value", last)
+		} else if now.Sub(time.Unix(ts, 0)) < x.MinInterval {
 			return nil, nil
 		}
 	}
+	// The read counter guards paid reads: if it can't be read, read nothing.
 	b := &budget{kv: kv, key: kvXReads + now.UTC().Format("2006-01-02"), max: x.MaxPerDay}
-	if v, _ := kv.Get(ctx, b.key); v != "" {
-		b.used, _ = strconv.Atoi(v)
+	v, err := kv.Get(ctx, b.key)
+	if err != nil {
+		return nil, fmt.Errorf("x read budget: %w", err)
+	}
+	if v != "" {
+		if b.used, err = strconv.Atoi(v); err != nil || b.used < 0 {
+			return nil, fmt.Errorf("x read budget: bad value %q in %s", v, b.key)
+		}
 	}
 	if b.left() < 5 { // the API's minimum max_results is 5
 		slog.Info("x daily read budget used up", "used", b.used, "max", x.MaxPerDay)
