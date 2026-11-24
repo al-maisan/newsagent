@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -97,11 +98,11 @@ func TestPriority(t *testing.T) {
 	if len(urg) != 1 || urg[0].Priority != PriorityPing {
 		t.Fatalf("unscored ping item must be pending: %+v", urg)
 	}
-	if dig, _ := s.PendingDigest(ctx, Daily, 6, since, 5); len(dig) != 0 {
+	if dig, _ := s.PendingDigest(ctx, Daily, 6, since, 5, 5); len(dig) != 0 {
 		t.Fatalf("ping item must not be in digest: %+v", dig)
 	}
 	s.Insert(ctx, []Item{{Source: "x", ExtID: "2", Title: "d", URL: "https://x/2", Priority: PriorityDigest}}, now)
-	if dig, _ := s.PendingDigest(ctx, Daily, 6, since, 5); len(dig) != 1 || dig[0].ExtID != "2" {
+	if dig, _ := s.PendingDigest(ctx, Daily, 6, since, 5, 5); len(dig) != 1 || dig[0].ExtID != "2" {
 		t.Fatalf("unscored digest item must be in digest: %+v", dig)
 	}
 }
@@ -160,14 +161,14 @@ func TestDigestKinds(t *testing.T) {
 	if err := s.MarkDigestSent(ctx, Hourly, id, now); err != nil {
 		t.Fatal(err)
 	}
-	if h, _ := s.PendingDigest(ctx, Hourly, 6, since, 5); len(h) != 0 {
+	if h, _ := s.PendingDigest(ctx, Hourly, 6, since, 5, 5); len(h) != 0 {
 		t.Fatal("hourly must skip items already sent hourly")
 	}
-	if d, _ := s.PendingDigest(ctx, Daily, 6, since, 5); len(d) != 1 {
+	if d, _ := s.PendingDigest(ctx, Daily, 6, since, 5, 5); len(d) != 1 {
 		t.Fatal("daily must include items sent hourly")
 	}
 	s.MarkDigestSent(ctx, Daily, id, now)
-	if d, _ := s.PendingDigest(ctx, Daily, 6, since, 5); len(d) != 0 {
+	if d, _ := s.PendingDigest(ctx, Daily, 6, since, 5, 5); len(d) != 0 {
 		t.Fatal("daily must skip items sent daily")
 	}
 }
@@ -298,5 +299,52 @@ func TestRejectedPingNotReported(t *testing.T) {
 	}
 	if urg, _ := s.PendingUrgent(ctx, 9, now.Add(-time.Hour), 5); len(urg) != 0 {
 		t.Fatalf("rejected ping must not be sent again: %+v", urg)
+	}
+}
+
+func TestPendingDigestCapsDigestItems(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	now := time.Date(2026, 11, 24, 10, 0, 0, 0, time.UTC)
+	var items []Item
+	for i := range 6 {
+		items = append(items, Item{Source: "x", ExtID: fmt.Sprint("d", i), Title: "d", URL: "https://x/d", Priority: PriorityDigest})
+	}
+	for i := range 3 {
+		items = append(items, Item{Source: "hn", ExtID: fmt.Sprint("n", i), Title: "n", URL: "https://n"})
+	}
+	s.Insert(ctx, items, now)
+	un, _ := s.Unscored(ctx, now.Add(-time.Hour), 20)
+	var ids []int64
+	var scores []Score
+	for _, it := range un {
+		ids = append(ids, it.ID)
+		scores = append(scores, Score{ID: it.ID, Score: 7})
+	}
+	s.SaveScores(ctx, ids, scores)
+	since := now.Add(-time.Hour)
+
+	got, err := s.PendingDigest(ctx, Daily, 6, since, 5, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var digest, news int
+	for _, it := range got {
+		if it.Priority == PriorityDigest {
+			digest++
+		} else {
+			news++
+		}
+	}
+	if len(got) != 5 || digest != 2 || news != 3 {
+		t.Fatalf("want 2 digest + 3 news items, got %d + %d", digest, news)
+	}
+	// Unused digest slots go to news; news never exceeds the total limit.
+	if got, _ := s.PendingDigest(ctx, Daily, 6, since, 4, 10); len(got) != 4 {
+		t.Fatalf("total limit: got %d", len(got))
 	}
 }

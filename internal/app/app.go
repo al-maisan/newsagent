@@ -50,6 +50,7 @@ const (
 	urgentWindow    = 24 * time.Hour
 	digestWindow    = 36 * time.Hour
 	digestMaxItems  = 80
+	digestMaxAlways = 30            // always-digest items per digest; the rest is for news
 	chunkLimit      = 4000          // below telegram.MaxLen to leave headroom
 	limitRepeat     = 6 * time.Hour // reminder interval while the usage limit lasts
 	kvAlarm         = "alarm:"      // + key: when the alarm last went out
@@ -188,7 +189,7 @@ func (a *App) sendUrgent(ctx context.Context, now time.Time) error {
 // it would fail again.
 func (a *App) Digest(ctx context.Context, kind store.DigestKind) error {
 	now := a.Now()
-	items, err := a.Store.PendingDigest(ctx, kind, a.DigestScore, now.Add(-digestWindow), digestMaxItems)
+	items, err := a.Store.PendingDigest(ctx, kind, a.DigestScore, now.Add(-digestWindow), digestMaxItems, digestMaxAlways)
 	if err != nil {
 		return err
 	}
