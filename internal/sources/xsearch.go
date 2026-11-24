@@ -31,6 +31,7 @@ type XSearch struct {
 	Accounts       []string
 	AlwaysDigest   []string // accounts whose posts always reach the digest
 	ExcludeReplies bool
+	IncludeReposts bool // plain reposts (native retweets) of the accounts
 	MinInterval    time.Duration
 	MaxPerDay      int           // safety cap on tweets read per UTC day
 	Pause          time.Duration // between requests (free tier: 1 per 5s)
@@ -51,18 +52,23 @@ const (
 	xsMaxPages   = 5           // per query and poll (20 tweets each)
 )
 
+type xsPost struct {
+	ID           string `json:"id"`
+	Text         string `json:"text"`
+	CreatedAt    string `json:"createdAt"`
+	LikeCount    int    `json:"likeCount"`
+	RetweetCount int    `json:"retweetCount"`
+	ReplyCount   int    `json:"replyCount"`
+	Author       struct {
+		UserName string `json:"userName"`
+	} `json:"author"`
+}
+
 type xsPage struct {
 	Tweets []struct {
-		ID           string `json:"id"`
-		URL          string `json:"url"`
-		Text         string `json:"text"`
-		CreatedAt    string `json:"createdAt"`
-		LikeCount    int    `json:"likeCount"`
-		RetweetCount int    `json:"retweetCount"`
-		ReplyCount   int    `json:"replyCount"`
-		Author       struct {
-			UserName string `json:"userName"`
-		} `json:"author"`
+		xsPost
+		IsRetweet bool    `json:"isRetweet"`
+		Original  *xsPost `json:"retweeted_tweet"` // set for reposts
 	} `json:"tweets"`
 	HasNextPage bool   `json:"has_next_page"`
 	NextCursor  string `json:"next_cursor"`
@@ -157,6 +163,9 @@ func (x *XSearch) queries() []xsQuery {
 	if x.ExcludeReplies {
 		filter = " -filter:replies"
 	}
+	if x.IncludeReposts {
+		filter += " include:nativeretweets"
+	}
 	room := xsMaxQuery - len(filter) - len(" since_time:") - 20 // longest since suffix
 	var out []xsQuery
 	var group []string
@@ -220,7 +229,10 @@ func (x *XSearch) search(ctx context.Context, kv KV, b *budget, q xsQuery, now t
 			if newerID(t.ID, newest) {
 				newest = t.ID
 			}
-			it := xsItem(t.ID, t.Author.UserName, t.Text, t.CreatedAt, t.LikeCount, t.RetweetCount, t.ReplyCount)
+			it := xsItem(t.xsPost, nil)
+			if o := t.Original; t.IsRetweet && o != nil && o.ID != "" && o.Author.UserName != "" {
+				it = xsItem(t.xsPost, o)
+			}
 			if digest[strings.ToLower(t.Author.UserName)] {
 				it.Priority = store.PriorityDigest
 			}
@@ -245,16 +257,24 @@ func (x *XSearch) search(ctx context.Context, kv KV, b *budget, q xsQuery, now t
 	return out, nil
 }
 
-func xsItem(id, name, text, created string, likes, reposts, replies int) store.Item {
-	pub, _ := time.Parse(time.RubyDate, created)
-	text = plain(text)
+// xsItem builds the item for t. For a repost (orig set) the item is the
+// original post: its id (so a story reposted by several accounts is stored
+// once), link and full text, as "@reposter reposted @author: …". Author and
+// date stay the reposter's, so always_digest and max_age apply to the repost.
+func xsItem(t xsPost, orig *xsPost) store.Item {
+	pub, _ := time.Parse(time.RubyDate, t.CreatedAt)
+	post, prefix := t, "@"+t.Author.UserName+": "
+	if orig != nil {
+		post, prefix = *orig, "@"+t.Author.UserName+" reposted @"+orig.Author.UserName+": "
+	}
+	text := plain(post.Text)
 	return store.Item{
 		Source:    "x",
-		ExtID:     id,
-		Title:     clip("@"+name+": "+text, 300),
-		URL:       "https://x.com/" + url.PathEscape(name) + "/status/" + url.PathEscape(id),
-		Author:    name,
-		Text:      fmt.Sprintf("%s (likes %d, reposts %d, replies %d)", clip(text, maxTextRunes), likes, reposts, replies),
+		ExtID:     post.ID,
+		Title:     clip(prefix+text, 300),
+		URL:       "https://x.com/" + url.PathEscape(post.Author.UserName) + "/status/" + url.PathEscape(post.ID),
+		Author:    t.Author.UserName,
+		Text:      fmt.Sprintf("%s (likes %d, reposts %d, replies %d)", clip(text, maxTextRunes), post.LikeCount, post.RetweetCount, post.ReplyCount),
 		Published: pub.UTC(),
 	}
 }

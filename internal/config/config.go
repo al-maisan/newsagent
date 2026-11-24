@@ -85,6 +85,7 @@ type Config struct {
 		Accounts       []string `json:"accounts"`
 		AlwaysDigest   []string `json:"always_digest"` // subset of accounts, like x.accounts
 		ExcludeReplies bool     `json:"exclude_replies"`
+		IncludeReposts bool     `json:"include_reposts"`
 		MinInterval    Duration `json:"min_interval"`
 		MaxPerDay      int      `json:"max_posts_per_day"`
 	} `json:"xsearch"`
@@ -144,6 +145,7 @@ func Load(path string, getenv func(string) string) (*Config, error) {
 	c.X.HomeTimeline = true
 	c.XSearch.MinInterval = Duration(15 * time.Minute)
 	c.XSearch.MaxPerDay = 2000
+	c.XSearch.IncludeReposts = true
 	c.LLM.ClaudePath = "claude"
 	c.LLM.HomeDir = "/var/lib/newsagent"
 	c.LLM.Model = "claude-opus-5-5"

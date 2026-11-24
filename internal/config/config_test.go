@@ -145,7 +145,7 @@ func TestLoadXSearch(t *testing.T) {
 	if _, err := Load(write(t, ok), env(e)); err != nil {
 		t.Fatalf("always_digest subset: %v", err)
 	}
-	if c.Secrets.TwitterAPIKey != "k" || time.Duration(c.XSearch.MinInterval) != 15*time.Minute || c.XSearch.MaxPerDay != 2000 {
+	if c.Secrets.TwitterAPIKey != "k" || time.Duration(c.XSearch.MinInterval) != 15*time.Minute || c.XSearch.MaxPerDay != 2000 || !c.XSearch.IncludeReposts {
 		t.Fatalf("defaults: %+v", c.XSearch)
 	}
 	for name, bad := range map[string]string{

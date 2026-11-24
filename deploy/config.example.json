@@ -50,6 +50,7 @@
       "REPLACE_OR_REMOVE"
     ],
     "exclude_replies": true,
+    "include_reposts": true,
     "min_interval": "15m",
     "max_posts_per_day": 2000
   },

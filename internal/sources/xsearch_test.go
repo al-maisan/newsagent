@@ -192,3 +192,36 @@ func TestXSearchAlwaysDigest(t *testing.T) {
 		t.Fatalf("priorities: %q %q", items[0].Priority, items[1].Priority)
 	}
 }
+
+func TestXSearchReposts(t *testing.T) {
+	repost := `{"id":"5009","text":"RT @orig: short…","createdAt":"Tue Nov 24 06:21:32 +0000 2026","likeCount":617,"isRetweet":true,
+		"author":{"userName":"Bell"},
+		"retweeted_tweet":{"id":"4001","text":"the full original text","createdAt":"Mon Nov 20 02:12:15 +0000 2026","likeCount":617,"retweetCount":9,"replyCount":4,"author":{"userName":"orig"}}}`
+	broken := `{"id":"5005","text":"RT @gone: x","createdAt":"Tue Nov 24 05:00:00 +0000 2026","isRetweet":true,"author":{"userName":"Bell"}}`
+	pages := map[string]string{"": `{"tweets":[` + repost + `,` + broken + `],"has_next_page":false,"next_cursor":""}`}
+	srv, queries := xsServer(t, pages, nil)
+	x := &XSearch{Client: srv.Client(), BaseURL: srv.URL, Key: "k", Accounts: []string{"bell"}, AlwaysDigest: []string{"bell"},
+		IncludeReposts: true, ExcludeReplies: true, MinInterval: time.Minute, MaxPerDay: 100}
+	kv := memKV{}
+	items, err := x.Fetch(context.Background(), kv, time.Now())
+	if err != nil || len(items) != 2 {
+		t.Fatal(items, err)
+	}
+	if q := (*queries)[0]; !strings.HasPrefix(q, "(from:bell) -filter:replies include:nativeretweets since_time:") {
+		t.Fatalf("bad query %q", q)
+	}
+	it := items[0]
+	if it.ExtID != "4001" || it.URL != "https://x.com/orig/status/4001" || it.Title != "@Bell reposted @orig: the full original text" ||
+		it.Author != "Bell" || it.Priority != store.PriorityDigest || !strings.Contains(it.Text, "reposts 9, replies 4") ||
+		!it.Published.Equal(time.Date(2026, 11, 24, 6, 21, 32, 0, time.UTC)) {
+		t.Fatalf("bad repost item %+v", it)
+	}
+	// No original attached: kept as the plain repost.
+	if items[1].ExtID != "5005" || items[1].Title != "@Bell: RT @gone: x" {
+		t.Fatalf("bad fallback %+v", items[1])
+	}
+	// since_id follows the repost ids, not the original's.
+	if kv[kvXSSince+x.queries()[0].key] != "5009" {
+		t.Fatalf("since_id %v", kv)
+	}
+}

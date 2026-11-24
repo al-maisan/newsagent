@@ -118,6 +118,7 @@ func run() error {
 			Accounts:       cfg.XSearch.Accounts,
 			AlwaysDigest:   cfg.XSearch.AlwaysDigest,
 			ExcludeReplies: cfg.XSearch.ExcludeReplies,
+			IncludeReposts: cfg.XSearch.IncludeReposts,
 			MinInterval:    time.Duration(cfg.XSearch.MinInterval),
 			MaxPerDay:      cfg.XSearch.MaxPerDay,
 			Pause:          6 * time.Second, // free tier: 1 request per 5 s
