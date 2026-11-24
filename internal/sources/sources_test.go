@@ -455,3 +455,42 @@ func TestXUsernamesCache(t *testing.T) {
 		t.Fatalf("fresh names looked up again: %q", lookups)
 	}
 }
+
+func TestXFetchRepostStoredAsOriginal(t *testing.T) {
+	var query string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/users/me":
+			fmt.Fprint(w, `{"data":{"id":"42"}}`)
+		case "/users":
+			fmt.Fprint(w, `{"data":[{"id":"7","username":"hdmoore"}]}`)
+		default:
+			query = r.URL.RawQuery
+			fmt.Fprint(w, `{"data":[
+				{"id":"9001","text":"RT @BleepinComputer: OpenRouter drops AI providers &amp; more…","author_id":"7","created_at":"2026-11-24T08:00:00Z",
+				 "referenced_tweets":[{"type":"retweeted","id":"8001"}]},
+				{"id":"9002","text":"own post","author_id":"7","created_at":"2026-11-24T08:01:00Z",
+				 "referenced_tweets":[{"type":"quoted","id":"8002"}]}],
+				"meta":{"newest_id":"9002"}}`)
+		}
+	}))
+	defer srv.Close()
+	x := &X{Client: srv.Client(), BaseURL: srv.URL, MaxPerPoll: 10, MaxPerDay: 100, MinInterval: time.Hour, HomeTimeline: true}
+	items, err := x.Fetch(context.Background(), memKV{}, time.Date(2026, 11, 24, 10, 0, 0, 0, time.UTC))
+	if err != nil || len(items) != 2 {
+		t.Fatal(items, err)
+	}
+	if !strings.Contains(query, "referenced_tweets") || strings.Contains(query, "expansions") {
+		t.Fatalf("bad query %q", query)
+	}
+	rt := items[0]
+	if rt.ExtID != "8001" || rt.URL != "https://x.com/BleepinComputer/status/8001" ||
+		rt.Title != "@hdmoore reposted @BleepinComputer: OpenRouter drops AI providers & more…" || rt.Author != "hdmoore" ||
+		!rt.Published.Equal(time.Date(2026, 11, 24, 8, 0, 0, 0, time.UTC)) {
+		t.Fatalf("bad repost %+v", rt)
+	}
+	// A quote is the quoting account's own post.
+	if items[1].ExtID != "9002" || items[1].Title != "@hdmoore: own post" {
+		t.Fatalf("bad quote %+v", items[1])
+	}
+}
