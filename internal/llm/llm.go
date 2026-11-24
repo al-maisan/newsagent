@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/al-maisan/newsagent/internal/store"
 )
@@ -23,7 +24,16 @@ type Claude struct {
 	ScoreEffort  string
 	DigestEffort string
 	Interests    string
+	Timeout      time.Duration // per CLI call; 0 means DefaultTimeout
 }
+
+// DefaultTimeout bounds one CLI call, so a hung call can't use up the
+// whole run and leave no time for sending.
+const DefaultTimeout = 5 * time.Minute
+
+// waitDelay is how long a timed-out CLI's leftover child processes may keep
+// its output pipes open before they are closed (a var for tests).
+var waitDelay = 5 * time.Second
 
 // Section is one themed group of a digest.
 type Section struct {
@@ -210,7 +220,13 @@ func (c *Claude) call(ctx context.Context, system string, payload any, schema js
 	if err != nil {
 		return err
 	}
-	cmd := exec.CommandContext(ctx, c.Path, "-p",
+	timeout := c.Timeout
+	if timeout <= 0 {
+		timeout = DefaultTimeout
+	}
+	cctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	cmd := exec.CommandContext(cctx, c.Path, "-p",
 		"--model", c.Model,
 		"--effort", effort,
 		"--system-prompt", system,
@@ -223,6 +239,7 @@ func (c *Claude) call(ctx context.Context, system string, payload any, schema js
 		"--no-session-persistence",
 	)
 	cmd.Dir = c.HomeDir
+	cmd.WaitDelay = waitDelay
 	// Explicit environment: no ANTHROPIC_API_KEY can leak in and switch the
 	// CLI to API billing.
 	cmd.Env = []string{
@@ -238,6 +255,9 @@ func (c *Claude) call(ctx context.Context, system string, payload any, schema js
 	runErr := cmd.Run()
 	if ctx.Err() != nil {
 		return &TransientError{fmt.Errorf("claude cli: %w", ctx.Err())}
+	}
+	if cctx.Err() != nil {
+		return &TransientError{fmt.Errorf("claude cli: no answer within %s", timeout)}
 	}
 	var res cliResult
 	if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
