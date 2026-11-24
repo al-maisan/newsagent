@@ -40,7 +40,7 @@
     "exclude_replies": true,
     "mentions": true,
     "accounts": [
-      "some_account"
+      "REPLACE_OR_REMOVE"
     ],
     "home_timeline": true
   },

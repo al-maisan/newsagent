@@ -48,7 +48,7 @@ sudo install -d -m 0755 /etc/newsagent && sudo install -m 0600 /dev/null /etc/ne
 
 Fill in `secrets.env` using `deploy/secrets.env.example` as a template. The file stays root-only because systemd reads it before dropping privileges.
 
-Copy `deploy/config.example.json` to `/etc/newsagent/config.json` (mode 0644). Then set `telegram.chat_id` and adjust `llm.interests`.
+Copy `deploy/config.example.json` to `/etc/newsagent/config.json` (mode 0644). Then set `telegram.chat_id`, replace or remove the `REPLACE_OR_REMOVE` entry in `x.accounts`, and adjust `llm.interests`. newsagent refuses to start while either placeholder is left.
 
 ## 5. First run and enable
 
