@@ -93,7 +93,7 @@ var digestSchema = json.RawMessage(`{
 }`)
 
 // Score rates items 0-10 for how important they are to the reader.
-// alreadyReported lists titles of stories the reader was pinged about.
+// alreadyReported lists titles of stories the reader was or will be pinged about.
 func (c *Claude) Score(ctx context.Context, items []store.Item, alreadyReported []string) ([]store.Score, error) {
 	system := `You are a news editor for one reader. Rate each item for how important it is to this reader.
 

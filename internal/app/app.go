@@ -101,7 +101,7 @@ func (a *App) score(ctx context.Context, now time.Time) error {
 		if err != nil || len(items) == 0 {
 			return err
 		}
-		reported, err := a.Store.RecentUrgentTitles(ctx, now.Add(-urgentWindow))
+		reported, err := a.Store.UrgentTitles(ctx, a.UrgentScore, now.Add(-urgentWindow))
 		if err != nil {
 			return err
 		}
@@ -141,21 +141,32 @@ func (a *App) sendUrgent(ctx context.Context, now time.Time) error {
 	if err != nil || len(items) == 0 {
 		return err
 	}
+	// A message Telegram rejects is marked anyway: resending it would fail
+	// again and block every ping behind it.
+	var errs []error
 	for _, it := range items {
 		if err := a.Send(ctx, a.renderUrgent(it)); err != nil {
-			return fmt.Errorf("send urgent: %w", err)
+			if !telegram.IsRejected(err) {
+				return errors.Join(append(errs, fmt.Errorf("send urgent: %w", err))...)
+			}
+			slog.Error("urgent rejected, skipped", "id", it.ID, "source", it.Source, "err", err)
+			errs = append(errs, fmt.Errorf("urgent %d rejected: %w", it.ID, err))
+		} else {
+			slog.Info("urgent sent", "id", it.ID, "source", it.Source, "score", it.Score)
 		}
 		if err := a.Store.MarkUrgentSent(ctx, it.ID, now); err != nil {
-			return fmt.Errorf("mark urgent: %w", err)
+			return errors.Join(append(errs, fmt.Errorf("mark urgent: %w", err))...)
 		}
-		slog.Info("urgent sent", "id", it.ID, "source", it.Source, "score", it.Score)
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // Digest sends a themed summary of the notable items since the last digest.
-// Items are marked only after every message part went out, so a failed send
-// is retried by the next digest (parts already delivered may repeat).
+// Only items that appear in the message are marked, and only after every
+// message part went out, so a failed send is retried by the next digest
+// (parts already delivered may repeat). Items the model left out stay
+// pending for the next digest. A part Telegram rejects is skipped: resending
+// it would fail again.
 func (a *App) Digest(ctx context.Context, kind store.DigestKind) error {
 	now := a.Now()
 	items, err := a.Store.PendingDigest(ctx, kind, a.DigestScore, now.Add(-digestWindow), digestMaxItems)
@@ -174,21 +185,25 @@ func (a *App) Digest(ctx context.Context, kind store.DigestKind) error {
 	if kind == store.Hourly {
 		title = "🕐 <b>Hourly update</b>"
 	}
-	msg := a.renderDigest(title, sections, items, now)
-	for _, part := range telegram.Split(msg, chunkLimit) {
+	msg, ids := a.renderDigest(title, sections, items, now)
+	if len(ids) == 0 {
+		return fmt.Errorf("digest: model output references none of the %d items", len(items))
+	}
+	var errs []error
+	for i, part := range telegram.Split(msg, chunkLimit) {
 		if err := a.Send(ctx, part); err != nil {
-			return fmt.Errorf("send digest: %w", err)
+			if !telegram.IsRejected(err) {
+				return errors.Join(append(errs, fmt.Errorf("send digest: %w", err))...)
+			}
+			slog.Error("digest part rejected, skipped", "part", i, "bytes", len(part), "err", err)
+			errs = append(errs, fmt.Errorf("digest part %d rejected: %w", i, err))
 		}
 	}
-	ids := make([]int64, len(items))
-	for i, it := range items {
-		ids[i] = it.ID
-	}
 	if err := a.Store.MarkDigestSent(ctx, kind, ids, now); err != nil {
-		return fmt.Errorf("mark digest: %w", err)
+		return errors.Join(append(errs, fmt.Errorf("mark digest: %w", err))...)
 	}
-	slog.Info("digest sent", "items", len(items), "sections", len(sections))
-	return nil
+	slog.Info("digest sent", "items", len(ids), "left_out", len(items)-len(ids), "sections", len(sections))
+	return errors.Join(errs...)
 }
 
 func (a *App) renderUrgent(it store.Item) string {
@@ -205,7 +220,8 @@ func (a *App) renderUrgent(it store.Item) string {
 	return b.String()
 }
 
-func (a *App) renderDigest(title string, sections []llm.Section, items []store.Item, now time.Time) string {
+// renderDigest returns the message and the ids of the items it shows.
+func (a *App) renderDigest(title string, sections []llm.Section, items []store.Item, now time.Time) (string, []int64) {
 	byID := make(map[int64]store.Item, len(items))
 	for _, it := range items {
 		byID[it.ID] = it
@@ -213,6 +229,7 @@ func (a *App) renderDigest(title string, sections []llm.Section, items []store.I
 	var b strings.Builder
 	b.WriteString(title + " · " + esc(now.In(a.Loc).Format("Mon 2 Jan 15:04")) + "\n")
 	used := map[int64]bool{}
+	var ids []int64
 	for _, s := range sections {
 		var lines []string
 		for _, e := range s.Entries {
@@ -221,13 +238,18 @@ func (a *App) renderDigest(title string, sections []llm.Section, items []store.I
 			for _, id := range e.ItemIDs {
 				if it, ok := byID[id]; ok && !seen[id] {
 					seen[id] = true
-					used[id] = true
 					refs = append(refs, a.links(it))
 				}
 			}
 			text := strings.TrimSpace(e.Text)
 			if len(refs) == 0 || text == "" {
 				continue // drop entries that point at nothing we fetched
+			}
+			for _, id := range e.ItemIDs {
+				if seen[id] && !used[id] {
+					used[id] = true
+					ids = append(ids, id)
+				}
 			}
 			lines = append(lines, "• "+esc(clip(text, maxEntryRunes))+" "+strings.Join(refs, " "))
 		}
@@ -240,12 +262,13 @@ func (a *App) renderDigest(title string, sections []llm.Section, items []store.I
 	for _, it := range items {
 		if it.Priority == store.PriorityDigest && !used[it.ID] {
 			missed = append(missed, "• "+esc(clip(it.Title, 200))+" "+a.links(it))
+			ids = append(ids, it.ID)
 		}
 	}
 	if len(missed) > 0 {
 		b.WriteString("\n<b>From accounts you follow</b>\n" + strings.Join(missed, "\n") + "\n")
 	}
-	return b.String()
+	return b.String(), ids
 }
 
 // links renders the item's links; URLs always come from the store.
