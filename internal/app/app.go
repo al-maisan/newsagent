@@ -160,9 +160,12 @@ func (a *App) sendUrgent(ctx context.Context, now time.Time) error {
 			}
 			slog.Error("urgent rejected, skipped", "id", it.ID, "source", it.Source, "err", err)
 			errs = append(errs, fmt.Errorf("urgent %d rejected: %w", it.ID, err))
-		} else {
-			slog.Info("urgent sent", "id", it.ID, "source", it.Source, "score", it.Score)
+			if err := a.Store.MarkUrgentRejected(ctx, it.ID, now); err != nil {
+				return errors.Join(append(errs, fmt.Errorf("mark urgent: %w", err))...)
+			}
+			continue
 		}
+		slog.Info("urgent sent", "id", it.ID, "source", it.Source, "score", it.Score)
 		if err := a.Store.MarkUrgentSent(ctx, it.ID, now); err != nil {
 			return errors.Join(append(errs, fmt.Errorf("mark urgent: %w", err))...)
 		}
