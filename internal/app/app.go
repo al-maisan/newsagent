@@ -153,9 +153,9 @@ func (a *App) sendUrgent(ctx context.Context, now time.Time) error {
 // message part went out, so a failed send is retried by the next digest
 // (parts already delivered may repeat). Items the model left out stay
 // pending for the next digest.
-func (a *App) Digest(ctx context.Context) error {
+func (a *App) Digest(ctx context.Context, kind store.DigestKind) error {
 	now := a.Now()
-	items, err := a.Store.PendingDigest(ctx, a.DigestScore, now.Add(-digestWindow), digestMaxItems)
+	items, err := a.Store.PendingDigest(ctx, kind, a.DigestScore, now.Add(-digestWindow), digestMaxItems)
 	if err != nil {
 		return err
 	}
@@ -167,7 +167,11 @@ func (a *App) Digest(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("digest: %w", err)
 	}
-	msg, ids := a.renderDigest(sections, items, now)
+	title := "📰 <b>News digest</b>"
+	if kind == store.Hourly {
+		title = "🕐 <b>Hourly update</b>"
+	}
+	msg, ids := a.renderDigest(title, sections, items, now)
 	if len(ids) == 0 {
 		return fmt.Errorf("digest: model output references none of the %d items", len(items))
 	}
@@ -176,7 +180,7 @@ func (a *App) Digest(ctx context.Context) error {
 			return fmt.Errorf("send digest: %w", err)
 		}
 	}
-	if err := a.Store.MarkDigestSent(ctx, ids, now); err != nil {
+	if err := a.Store.MarkDigestSent(ctx, kind, ids, now); err != nil {
 		return fmt.Errorf("mark digest: %w", err)
 	}
 	slog.Info("digest sent", "items", len(ids), "left_out", len(items)-len(ids), "sections", len(sections))
@@ -198,13 +202,13 @@ func (a *App) renderUrgent(it store.Item) string {
 }
 
 // renderDigest returns the message and the ids of the items it shows.
-func (a *App) renderDigest(sections []llm.Section, items []store.Item, now time.Time) (string, []int64) {
+func (a *App) renderDigest(title string, sections []llm.Section, items []store.Item, now time.Time) (string, []int64) {
 	byID := make(map[int64]store.Item, len(items))
 	for _, it := range items {
 		byID[it.ID] = it
 	}
 	var b strings.Builder
-	b.WriteString("📰 <b>News digest</b> · " + esc(now.In(a.Loc).Format("Mon 2 Jan 15:04")) + "\n")
+	b.WriteString(title + " · " + esc(now.In(a.Loc).Format("Mon 2 Jan 15:04")) + "\n")
 	used := map[int64]bool{}
 	var ids []int64
 	for _, s := range sections {
