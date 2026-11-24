@@ -342,6 +342,18 @@ func (s *Store) Set(ctx context.Context, key, value string) error {
 	return err
 }
 
+// DeleteBefore deletes the keys that start with prefix and sort before
+// bound, which must start with prefix too. With date-suffixed keys this
+// drops all days before bound's.
+func (s *Store) DeleteBefore(ctx context.Context, prefix, bound string) error {
+	if prefix == "" || !strings.HasPrefix(bound, prefix) {
+		return fmt.Errorf("delete before: bound %q lacks prefix %q", bound, prefix)
+	}
+	// Every key in [prefix, bound) starts with prefix.
+	_, err := s.db.ExecContext(ctx, `DELETE FROM kv WHERE key >= ? AND key < ?`, prefix, bound)
+	return err
+}
+
 func (s *Store) query(ctx context.Context, where string, args ...any) ([]Item, error) {
 	q := `SELECT id, source, ext_id, title, url, discuss_url, author, text, published_at,
 		COALESCE(score, 0), summary, priority FROM items ` + strings.TrimSpace(where)

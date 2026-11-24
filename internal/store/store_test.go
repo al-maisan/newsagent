@@ -249,3 +249,26 @@ func TestPruneKeepsUndatedLonger(t *testing.T) {
 		t.Fatalf("want the undated item pruned after a year: %d %v", n, err)
 	}
 }
+
+func TestDeleteBefore(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, k := range []string{"x_reads:2026-11-22", "x_reads:2026-11-23", "x_reads:2026-11-24", "x_reads", "x_since_id", "a"} {
+		s.Set(ctx, k, "1")
+	}
+	if err := s.DeleteBefore(ctx, "x_reads:", "x_reads:2026-11-24"); err != nil {
+		t.Fatal(err)
+	}
+	for k, want := range map[string]string{"x_reads:2026-11-22": "", "x_reads:2026-11-23": "", "x_reads:2026-11-24": "1", "x_reads": "1", "x_since_id": "1", "a": "1"} {
+		if v, _ := s.Get(ctx, k); v != want {
+			t.Errorf("%s = %q, want %q", k, v, want)
+		}
+	}
+	if err := s.DeleteBefore(ctx, "x_reads:", "zzz"); err == nil {
+		t.Error("bound without prefix: want error")
+	}
+}

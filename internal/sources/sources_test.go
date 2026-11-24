@@ -117,6 +117,14 @@ type memKV map[string]string
 
 func (m memKV) Get(_ context.Context, k string) (string, error) { return m[k], nil }
 func (m memKV) Set(_ context.Context, k, v string) error        { m[k] = v; return nil }
+func (m memKV) DeleteBefore(_ context.Context, prefix, bound string) error {
+	for k := range m {
+		if strings.HasPrefix(k, prefix) && k < bound {
+			delete(m, k)
+		}
+	}
+	return nil
+}
 
 func TestXFetch(t *testing.T) {
 	var calls []string
@@ -137,10 +145,13 @@ func TestXFetch(t *testing.T) {
 	defer srv.Close()
 	x := &X{Client: srv.Client(), BaseURL: srv.URL, Auth: OAuth1{"a", "b", "c", "d"},
 		MaxPerPoll: 50, MaxPerDay: 60, MinInterval: 30 * time.Minute, ExcludeReplies: true, HomeTimeline: true}
-	kv := memKV{}
+	kv := memKV{kvXReads + "2020-01-01": "7"} // an old day's counter
 	now := time.Date(2026, 11, 23, 10, 0, 0, 0, time.UTC)
 
 	items, err := x.Fetch(context.Background(), kv, now)
+	if _, ok := kv[kvXReads+"2020-01-01"]; ok {
+		t.Error("old read counter not dropped")
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
