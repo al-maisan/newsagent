@@ -61,7 +61,7 @@ sudo systemctl start newsagent-poll.service; journalctl -u newsagent-poll -n 50 
 sudo systemctl enable --now newsagent-poll.timer newsagent-digest.timer
 ```
 
-Optional hourly mode (short updates 09:00–23:00, on top of the daily digests):
+Optional hourly mode (short updates 09:00–23:00). Each item still appears in one message only, so with hourly on the 08:00 digest holds the overnight news and the 18:00 digest only what came in after the 17:00 update (often little or nothing):
 
 ```sh
 sudo systemctl enable --now newsagent-hourly.timer
