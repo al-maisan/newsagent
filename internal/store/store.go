@@ -276,23 +276,20 @@ func (s *Store) MarkUrgentRejected(ctx context.Context, id int64, now time.Time)
 type DigestKind int
 
 const (
-	// Daily digests recap everything since the last daily digest, including
-	// items already sent in an hourly digest.
+	// Daily digests (08:00, 18:00) and hourly updates both carry only items
+	// that no digest of either kind has shown yet, so nothing is repeated;
+	// the kind decides the title and which sent column is set.
 	Daily DigestKind = iota
-	// Hourly digests only carry items that were in no digest yet.
 	Hourly
 )
 
-// PendingDigest returns the items for the next digest of the given kind:
+// PendingDigest returns the items for the next digest (daily or hourly):
 // at most maxDigest digest items (priority "digest", always shown), then the
 // best-scored items scoring at least minScore, up to limit in total. Capping
 // digest items keeps a few busy accounts from crowding out all other news;
 // the ones over the cap stay pending for the next digest.
-func (s *Store) PendingDigest(ctx context.Context, kind DigestKind, minScore int, since time.Time, limit, maxDigest int) ([]Item, error) {
-	notSent := "digest_sent_at IS NULL"
-	if kind == Hourly {
-		notSent += " AND hourly_sent_at IS NULL"
-	}
+func (s *Store) PendingDigest(ctx context.Context, minScore int, since time.Time, limit, maxDigest int) ([]Item, error) {
+	const notSent = "digest_sent_at IS NULL AND hourly_sent_at IS NULL"
 	digest, err := s.query(ctx, `WHERE priority = 'digest' AND `+notSent+` AND fetched_at > ?
 		ORDER BY score DESC, id LIMIT ?`, since.Unix(), min(maxDigest, limit))
 	if err != nil {
@@ -306,19 +303,14 @@ func (s *Store) PendingDigest(ctx context.Context, kind DigestKind, minScore int
 	return append(digest, rest...), nil
 }
 
-// RecentDigestTitles returns the titles of items that went out in digests
-// after since, newest first, at most limit: for a daily digest the earlier
-// daily digests (it recaps the hourly ones on purpose), for an hourly one
-// every digest. The digest model uses them to skip repeated stories.
-func (s *Store) RecentDigestTitles(ctx context.Context, kind DigestKind, since time.Time, limit int) ([]string, error) {
-	cond, sent := "digest_sent_at > ?", "COALESCE(digest_sent_at, 0)"
-	args := []any{since.Unix()}
-	if kind == Hourly {
-		cond = "(digest_sent_at > ? OR hourly_sent_at > ?)"
-		sent = "MAX(COALESCE(digest_sent_at, 0), COALESCE(hourly_sent_at, 0))"
-		args = append(args, since.Unix())
-	}
-	rows, err := s.db.QueryContext(ctx, `SELECT title FROM items WHERE `+cond+` ORDER BY `+sent+` DESC, id DESC LIMIT ?`, append(args, limit)...)
+// RecentDigestTitles returns the titles of items that went out in any digest
+// (daily or hourly) after since, newest first, at most limit. The digest
+// model uses them to skip repeated stories.
+func (s *Store) RecentDigestTitles(ctx context.Context, since time.Time, limit int) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT title FROM items
+		WHERE digest_sent_at > ? OR hourly_sent_at > ?
+		ORDER BY MAX(COALESCE(digest_sent_at, 0), COALESCE(hourly_sent_at, 0)) DESC, id DESC LIMIT ?`,
+		since.Unix(), since.Unix(), limit)
 	if err != nil {
 		return nil, err
 	}

@@ -191,7 +191,7 @@ func (a *App) sendUrgent(ctx context.Context, now time.Time) error {
 // it would fail again.
 func (a *App) Digest(ctx context.Context, kind store.DigestKind) error {
 	now := a.Now()
-	items, err := a.Store.PendingDigest(ctx, kind, a.DigestScore, now.Add(-digestWindow), digestMaxItems, digestMaxAlways)
+	items, err := a.Store.PendingDigest(ctx, a.DigestScore, now.Add(-digestWindow), digestMaxItems, digestMaxAlways)
 	if err != nil {
 		return err
 	}
@@ -203,7 +203,7 @@ func (a *App) Digest(ctx context.Context, kind store.DigestKind) error {
 		slog.Info("digest: nothing notable")
 		return nil
 	}
-	recent, err := a.Store.RecentDigestTitles(ctx, kind, now.Add(-sentWindow), maxSentTitles)
+	recent, err := a.Store.RecentDigestTitles(ctx, now.Add(-sentWindow), maxSentTitles)
 	if err != nil {
 		return err
 	}
