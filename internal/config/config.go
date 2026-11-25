@@ -97,6 +97,11 @@ type Config struct {
 		DigestEffort string `json:"digest_effort"`
 		Interests    string `json:"interests"`
 	} `json:"llm"`
+	Digest struct {
+		// EachItemOnce: every item appears in one message only. Off, the
+		// daily digests also repeat what hourly updates showed.
+		EachItemOnce bool `json:"each_item_once"`
+	} `json:"digest"`
 	Thresholds struct {
 		Urgent        int `json:"urgent"`
 		Digest        int `json:"digest"`
@@ -151,6 +156,7 @@ func Load(path string, getenv func(string) string) (*Config, error) {
 	c.LLM.Model = "claude-opus-5-5"
 	c.LLM.ScoreEffort = "low"
 	c.LLM.DigestEffort = "medium"
+	c.Digest.EachItemOnce = true
 	c.Thresholds.Urgent = 9
 	c.Thresholds.Digest = 6
 	c.Thresholds.MaxUrgentPoll = 3

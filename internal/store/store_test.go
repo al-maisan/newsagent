@@ -98,11 +98,11 @@ func TestPriority(t *testing.T) {
 	if len(urg) != 1 || urg[0].Priority != PriorityPing {
 		t.Fatalf("unscored ping item must be pending: %+v", urg)
 	}
-	if dig, _ := s.PendingDigest(ctx, Daily, 6, since, 5, 5); len(dig) != 0 {
+	if dig, _ := s.PendingDigest(ctx, false, 6, since, 5, 5); len(dig) != 0 {
 		t.Fatalf("ping item must not be in digest: %+v", dig)
 	}
 	s.Insert(ctx, []Item{{Source: "x", ExtID: "2", Title: "d", URL: "https://x/2", Priority: PriorityDigest}}, now)
-	if dig, _ := s.PendingDigest(ctx, Daily, 6, since, 5, 5); len(dig) != 1 || dig[0].ExtID != "2" {
+	if dig, _ := s.PendingDigest(ctx, false, 6, since, 5, 5); len(dig) != 1 || dig[0].ExtID != "2" {
 		t.Fatalf("unscored digest item must be in digest: %+v", dig)
 	}
 }
@@ -161,15 +161,11 @@ func TestDigestKinds(t *testing.T) {
 	if err := s.MarkDigestSent(ctx, Hourly, id, now); err != nil {
 		t.Fatal(err)
 	}
-	if h, _ := s.PendingDigest(ctx, Hourly, 6, since, 5, 5); len(h) != 0 {
+	if h, _ := s.PendingDigest(ctx, false, 6, since, 5, 5); len(h) != 0 {
 		t.Fatal("hourly must skip items already sent hourly")
 	}
-	if d, _ := s.PendingDigest(ctx, Daily, 6, since, 5, 5); len(d) != 1 {
-		t.Fatal("daily must include items sent hourly")
-	}
-	s.MarkDigestSent(ctx, Daily, id, now)
-	if d, _ := s.PendingDigest(ctx, Daily, 6, since, 5, 5); len(d) != 0 {
-		t.Fatal("daily must skip items sent daily")
+	if d, _ := s.PendingDigest(ctx, false, 6, since, 5, 5); len(d) != 0 {
+		t.Fatal("daily must skip items an hourly update already showed")
 	}
 }
 
@@ -328,7 +324,7 @@ func TestPendingDigestCapsDigestItems(t *testing.T) {
 	s.SaveScores(ctx, ids, scores)
 	since := now.Add(-time.Hour)
 
-	got, err := s.PendingDigest(ctx, Daily, 6, since, 5, 2)
+	got, err := s.PendingDigest(ctx, false, 6, since, 5, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,7 +340,7 @@ func TestPendingDigestCapsDigestItems(t *testing.T) {
 		t.Fatalf("want 2 digest + 3 news items, got %d + %d", digest, news)
 	}
 	// Unused digest slots go to news; news never exceeds the total limit.
-	if got, _ := s.PendingDigest(ctx, Daily, 6, since, 4, 10); len(got) != 4 {
+	if got, _ := s.PendingDigest(ctx, false, 6, since, 4, 10); len(got) != 4 {
 		t.Fatalf("total limit: got %d", len(got))
 	}
 }
@@ -368,13 +364,37 @@ func TestRecentDigestTitles(t *testing.T) {
 	s.MarkDigestSent(ctx, Hourly, []int64{un[1].ID}, now.Add(time.Hour))
 	s.MarkDigestSent(ctx, Daily, []int64{un[2].ID}, now.Add(-48*time.Hour))
 	since := now.Add(-24 * time.Hour)
-	if got, _ := s.RecentDigestTitles(ctx, Daily, since, 10); len(got) != 1 || got[0] != "daily" {
-		t.Fatalf("daily: %q (recaps hourly items, so they don't count)", got)
+	if got, _ := s.RecentDigestTitles(ctx, false, since, 10); len(got) != 2 || got[0] != "hourly" || got[1] != "daily" {
+		t.Fatalf("got %q (newest first, both kinds, not older than since)", got)
 	}
-	if got, _ := s.RecentDigestTitles(ctx, Hourly, since, 10); len(got) != 2 || got[0] != "hourly" || got[1] != "daily" {
-		t.Fatalf("hourly: %q (newest first, both kinds)", got)
-	}
-	if got, _ := s.RecentDigestTitles(ctx, Hourly, since, 1); len(got) != 1 {
+	if got, _ := s.RecentDigestTitles(ctx, false, since, 1); len(got) != 1 {
 		t.Fatalf("limit: %q", got)
+	}
+}
+
+func TestDailyRecapMode(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	now := time.Date(2026, 11, 25, 10, 0, 0, 0, time.UTC)
+	since := now.Add(-time.Hour)
+	s.Insert(ctx, []Item{{Source: "a", ExtID: "h", Title: "hourly", URL: "https://e/h"}, {Source: "a", ExtID: "d", Title: "daily", URL: "https://e/d"}}, now)
+	un, _ := s.Unscored(ctx, since, 5)
+	s.SaveScores(ctx, []int64{un[0].ID, un[1].ID}, []Score{{ID: un[0].ID, Score: 8}, {ID: un[1].ID, Score: 8}})
+	s.MarkDigestSent(ctx, Hourly, []int64{un[0].ID}, now)
+	s.MarkDigestSent(ctx, Daily, []int64{un[1].ID}, now)
+	// Recap: the hourly-sent item comes back for the daily; the daily-sent one doesn't.
+	if d, _ := s.PendingDigest(ctx, true, 6, since, 5, 5); len(d) != 1 || d[0].Title != "hourly" {
+		t.Fatalf("recap pending: %+v", d)
+	}
+	if d, _ := s.PendingDigest(ctx, false, 6, since, 5, 5); len(d) != 0 {
+		t.Fatalf("each-item-once pending: %+v", d)
+	}
+	// Recap compares only with earlier dailies.
+	if got, _ := s.RecentDigestTitles(ctx, true, now.Add(-24*time.Hour), 10); len(got) != 1 || got[0] != "daily" {
+		t.Fatalf("recap titles: %q", got)
 	}
 }

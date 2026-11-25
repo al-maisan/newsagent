@@ -258,16 +258,26 @@ func TestHourlyThenDaily(t *testing.T) {
 	if len(*sent) != 1 {
 		t.Fatalf("hourly repeated items: %q", *sent)
 	}
-	// Daily recap still carries the item, and afterwards hourly stays quiet.
+	// The daily doesn't repeat what an hourly update showed.
 	if err := a.Digest(context.Background(), store.Daily); err != nil {
 		t.Fatal(err)
 	}
-	if len(*sent) != 2 || !strings.Contains((*sent)[1], "News digest") || !strings.Contains((*sent)[1], "https://e.com/1") {
-		t.Fatalf("daily must recap hourly items: %q", *sent)
+	if len(*sent) != 1 {
+		t.Fatalf("daily repeated an hourly item: %q", *sent)
+	}
+	// A new item goes into the next digest of either kind, once.
+	a.Store.Insert(context.Background(), []store.Item{item("2", "A")}, now)
+	m.scores["A"] = 7
+	a.Poll(context.Background())
+	if err := a.Digest(context.Background(), store.Daily); err != nil {
+		t.Fatal(err)
+	}
+	if len(*sent) != 2 || !strings.Contains((*sent)[1], "News digest") || !strings.Contains((*sent)[1], "https://e.com/2") {
+		t.Fatalf("daily must carry the new item: %q", *sent)
 	}
 	a.Digest(context.Background(), store.Hourly)
 	if len(*sent) != 2 {
-		t.Fatalf("hourly after daily: %q", *sent)
+		t.Fatalf("hourly repeated a daily item: %q", *sent)
 	}
 }
 
@@ -503,5 +513,26 @@ func TestDigestSkipsRepeats(t *testing.T) {
 	a.Digest(context.Background(), store.Hourly)
 	if len(*sent) != 1 {
 		t.Fatalf("skipped repeat came back: %q", *sent)
+	}
+}
+
+func TestDailyRecapRepeatsHourly(t *testing.T) {
+	m := &fakeModel{scores: map[string]int{"A": 7}}
+	a, sent := newApp(t, m, []store.Item{item("1", "A")})
+	a.DailyRecap = true
+	a.Poll(context.Background())
+	if err := a.Digest(context.Background(), store.Hourly); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Digest(context.Background(), store.Daily); err != nil {
+		t.Fatal(err)
+	}
+	if len(*sent) != 2 || !strings.Contains((*sent)[1], "News digest") || !strings.Contains((*sent)[1], "https://e.com/1") {
+		t.Fatalf("recap daily must repeat the hourly item: %q", *sent)
+	}
+	// After the daily, the next daily doesn't repeat it again.
+	a.Digest(context.Background(), store.Daily)
+	if len(*sent) != 2 {
+		t.Fatalf("daily repeated itself: %q", *sent)
 	}
 }

@@ -61,7 +61,7 @@ sudo systemctl start newsagent-poll.service; journalctl -u newsagent-poll -n 50 
 sudo systemctl enable --now newsagent-poll.timer newsagent-digest.timer
 ```
 
-Optional hourly mode (short updates 09:00–23:00, on top of the daily digests):
+Optional hourly mode (short updates 09:00–23:00). With `digest.each_item_once` (the default) each item still appears in one message only, so the 08:00 digest holds the overnight news and the 18:00 digest only what came in after the 17:00 update (often little or nothing); set it to `false` to make the dailies recap the hourly updates:
 
 ```sh
 sudo systemctl enable --now newsagent-hourly.timer
@@ -106,6 +106,7 @@ Turn it off again with `sudo systemctl disable --now newsagent-hourly.timer`.
 | `llm.model` | `claude-opus-5-5` | Claude model for scoring and digests |
 | `llm.score_effort` / `llm.digest_effort` | `low` / `medium` | Claude effort levels |
 | `llm.interests` | — (required) | what you care about; Claude scores every item against it |
+| `digest.each_item_once` | `true` | every item appears in one message only; `false`: the 08:00/18:00 digests also repeat what hourly updates showed since the previous daily |
 | `thresholds.urgent` / `thresholds.digest` | `9` / `6` | minimum score for a ping / a digest line |
 | `thresholds.max_urgent_per_poll` | `3` | cap on pings per poll |
 | `telegram.chat_id` | — (required) | chat to send to: a number (negative for groups) or `@channelname` |

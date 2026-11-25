@@ -80,6 +80,7 @@ func run() error {
 		UrgentScore:   cfg.Thresholds.Urgent,
 		DigestScore:   cfg.Thresholds.Digest,
 		MaxUrgentPoll: cfg.Thresholds.MaxUrgentPoll,
+		DailyRecap:    !cfg.Digest.EachItemOnce,
 		Labels:        map[string]string{"hn": "HN", "x": "X"},
 	}
 	if cfg.HN.Enabled {

@@ -40,7 +40,10 @@ type App struct {
 	UrgentScore   int
 	DigestScore   int
 	MaxUrgentPoll int
-	Labels        map[string]string // source name -> display label
+	// DailyRecap makes daily digests repeat what hourly updates showed since
+	// the last daily; off, every item appears in one message only.
+	DailyRecap bool
+	Labels     map[string]string // source name -> display label
 }
 
 const (
@@ -191,7 +194,8 @@ func (a *App) sendUrgent(ctx context.Context, now time.Time) error {
 // it would fail again.
 func (a *App) Digest(ctx context.Context, kind store.DigestKind) error {
 	now := a.Now()
-	items, err := a.Store.PendingDigest(ctx, kind, a.DigestScore, now.Add(-digestWindow), digestMaxItems, digestMaxAlways)
+	recap := kind == store.Daily && a.DailyRecap
+	items, err := a.Store.PendingDigest(ctx, recap, a.DigestScore, now.Add(-digestWindow), digestMaxItems, digestMaxAlways)
 	if err != nil {
 		return err
 	}
@@ -203,7 +207,7 @@ func (a *App) Digest(ctx context.Context, kind store.DigestKind) error {
 		slog.Info("digest: nothing notable")
 		return nil
 	}
-	recent, err := a.Store.RecentDigestTitles(ctx, kind, now.Add(-sentWindow), maxSentTitles)
+	recent, err := a.Store.RecentDigestTitles(ctx, recap, now.Add(-sentWindow), maxSentTitles)
 	if err != nil {
 		return err
 	}
