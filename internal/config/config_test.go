@@ -31,6 +31,12 @@ func TestLoadDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !c.Digest.EachItemOnce {
+		t.Fatal("digest.each_item_once must default to true")
+	}
+	if c2, err := Load(write(t, `{"digest":{"each_item_once":false},"llm":{"interests":"tech"},"telegram":{"chat_id":"1"}}`), env(baseEnv)); err != nil || c2.Digest.EachItemOnce {
+		t.Fatalf("each_item_once false: %v %+v", err, c2)
+	}
 	if c.LLM.Model != "claude-opus-5-5" || c.HN.TopN != 30 || time.Duration(c.MaxAge) != 48*time.Hour || c.Thresholds.Urgent != 9 {
 		t.Fatalf("defaults not applied: %+v", c)
 	}

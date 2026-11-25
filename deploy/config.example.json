@@ -62,6 +62,9 @@
     "digest_effort": "medium",
     "interests": "Software engineer. Cares about: AI and LLMs (models, agents, tooling), Bitcoin protocol and ecosystem, Linux and open source, security incidents and vulnerabilities, Go and Rust, major moves by big tech companies. Not interested in: gaming, entertainment, gadget reviews, celebrity news."
   },
+  "digest": {
+    "each_item_once": true
+  },
   "thresholds": {
     "urgent": 9,
     "digest": 6,

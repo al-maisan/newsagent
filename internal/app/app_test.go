@@ -515,3 +515,24 @@ func TestDigestSkipsRepeats(t *testing.T) {
 		t.Fatalf("skipped repeat came back: %q", *sent)
 	}
 }
+
+func TestDailyRecapRepeatsHourly(t *testing.T) {
+	m := &fakeModel{scores: map[string]int{"A": 7}}
+	a, sent := newApp(t, m, []store.Item{item("1", "A")})
+	a.DailyRecap = true
+	a.Poll(context.Background())
+	if err := a.Digest(context.Background(), store.Hourly); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Digest(context.Background(), store.Daily); err != nil {
+		t.Fatal(err)
+	}
+	if len(*sent) != 2 || !strings.Contains((*sent)[1], "News digest") || !strings.Contains((*sent)[1], "https://e.com/1") {
+		t.Fatalf("recap daily must repeat the hourly item: %q", *sent)
+	}
+	// After the daily, the next daily doesn't repeat it again.
+	a.Digest(context.Background(), store.Daily)
+	if len(*sent) != 2 {
+		t.Fatalf("daily repeated itself: %q", *sent)
+	}
+}
